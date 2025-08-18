@@ -92,7 +92,9 @@ class TransitionEvaluator:
         more robust, keyword-based approach. This will be refactored to be
         stateful and context-aware.
         """
-        input_lower = user_input.lower().strip()
+        # Sanitize the input string from list-like formatting e.g., "['Hello?']"
+        cleaned_input = re.sub(r"[\[\]\'\"]", "", user_input)
+        input_lower = cleaned_input.lower().strip()
         desc_lower = condition_desc.lower()
 
         # Prioritize exact match, then fall back to substring match
