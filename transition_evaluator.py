@@ -54,14 +54,7 @@ class TransitionEvaluator:
             "unemployed": [re.compile(r'\b(unemployed|not working|in between jobs|laid off|no job)\b', re.IGNORECASE)],
             "affirmative": [re.compile(r'\b(yes|yeah|yep|yup|sure|okay|correct|right|sounds good|i do|i have|affirmative)\b', re.IGNORECASE)],
             "negative": [re.compile(r'\b(no|nope|nah|not really|i don\'t|i do not|negative)\b', re.IGNORECASE)],
-            "score_over_650": [re.compile(r'\b(yes|yeah|yep|sure|i do|it is|over)\b|[7-9]\d{2}|6[5-9]\d', re.IGNORECASE)],
-            "score_under_650": [re.compile(r'\b(no|nope|nah|don\'t think so|under|it is not)\b|[0-5]\d{2}|6[0-4]\d', re.IGNORECASE)],
-            "motivation_provided": [re.compile(r'\b(because|reason is|looking for|want to|need to|tired of|sick of|i want|i need)\b', re.IGNORECASE)],
-            "time_given": [re.compile(r'\d+|in a few|in a moment|minute|hour|o\'clock', re.IGNORECASE)],
-            "vague_time": [re.compile(r'\b(soon|shortly|later|in a bit|after this|sometime)\b', re.IGNORECASE)],
-            "partner_involved": [re.compile(r'\b(yes|i do|partner|spouse|wife|husband|business partner|someone else)\b', re.IGNORECASE)],
-            "no_partner_involved": [re.compile(r'\b(no|i don\'t|just me|myself|all me)\b', re.IGNORECASE)],
-            "unsure": [re.compile(r'\b(not sure|don\'t know|have to check|maybe|i guess|i think so)\b', re.IGNORECASE)],
+            "unsure": [re.compile(r'\b(not sure|don\'t know|maybe|have to check)\b', re.IGNORECASE)],
         }
 
     def evaluate_response(self, user_input: str, transition_conditions: Dict[str, str]) -> Tuple[bool, Optional[str], str]:

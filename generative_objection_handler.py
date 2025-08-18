@@ -321,7 +321,7 @@ class ResponseOrchestrator:
         should_retry = self.transition_evaluator.should_retry_node_goal(
             user_input,
             transition_conditions,
-            self.state_manager.current_node_state.attempts if self.state_manager.current_node_state else 0
+            self.conversation_state_manager.current_node_state.attempts if self.conversation_state_manager.current_node_state else 0
         )
         logging.info(f"Orchestrator.generate_response: user_input='{user_input}', condition_met={condition_met}, target_node={target_node}, should_retry={should_retry}")
         
@@ -498,13 +498,13 @@ class ResponseOrchestrator:
         context = GenerativeObjectionContext(
             node_id=node_data.get('id', ''),
             user_utterance=user_input,
-            conversation_history=self.state_manager.get_recent_history(include_interrupted=False), # Exclude interrupted turns
-            persona=self.state_manager.personality_type,
+            conversation_history=self.conversation_state_manager.get_recent_history(include_interrupted=False), # Exclude interrupted turns
+            persona=self.conversation_state_manager.personality_type,
             node_goal=node_data.get('goal', ''),
             transition_conditions=self.transition_evaluator.extract_transition_conditions_from_node(node_data),
-            used_strategies=[s for s in self.state_manager.global_strategies_used.get(objection, [])],
-            attempt_number=self.state_manager.current_node_state.attempts + 1 if self.state_manager.current_node_state else 1,
-            last_user_statement=self.state_manager.get_last_user_utterance(),
+            used_strategies=[s for s in self.conversation_state_manager.global_strategies_used.get(objection, [])],
+            attempt_number=self.conversation_state_manager.current_node_state.attempts + 1 if self.conversation_state_manager.current_node_state else 1,
+            last_user_statement=self.conversation_state_manager.get_last_user_utterance(),
             requires_goal_achievement=should_retry
         )
         logging.debug(f"Orchestrator._generate_objection_response: Context built: {context}")
@@ -686,7 +686,7 @@ class ResponseOrchestrator:
 
             # Persona-based softening for S tone
             try:
-                persona = getattr(self.state_manager, "personality_type", "S")
+                persona = getattr(self.conversation_state_manager, "personality_type", "S")
             except Exception:
                 persona = "S"
             if str(persona).upper() == "S":

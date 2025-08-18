@@ -17,4 +17,5 @@ class CallFlowState:
     agent_utterance_history: list = field(default_factory=list)
     interruption_count: int = 0
     tactic_history: dict = field(default_factory=dict) # Tracks tactics used per node
+    user_income: Optional[float] = None # Track user's stated income
     has_discussed_income_potential: bool = False

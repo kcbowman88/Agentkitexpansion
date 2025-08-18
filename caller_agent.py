@@ -5,6 +5,7 @@ from enum import Enum
 import time
 import asyncio # Ensure asyncio is imported
 import re
+import random
 
 from livekit.agents import Agent, function_tool, RunContext, llm
 from call_flow import CALL_FLOW
@@ -431,6 +432,57 @@ class CallFlowAgent(Agent):
             logging.debug(f"Processing user input: '{user_input}' in node '{state.current_node_id}'")
             self.conversation_state_manager.add_turn('user', user_input, state.current_node_id)
 
+            # --- Special Handling for Data-Capture Nodes ---
+            if state.current_node_id == "N201A_Employed_AskYearlyIncome_V8_Adaptive":
+                try:
+                    # Extract numbers from the user's response to capture income
+                    income_numbers = re.findall(r'\d{1,3}(?:,\d{3})*|\d+', user_input)
+                    if income_numbers:
+                        # Convert to float and handle thousands (e.g., "50k")
+                        income_str = income_numbers[0].replace(',', '')
+                        if 'k' in user_input.lower():
+                            income_value = float(income_str) * 1000
+                        else:
+                            income_value = float(income_str)
+                        state.user_income = income_value
+                        logging.info(f"Captured user income: {state.user_income}")
+                except (ValueError, IndexError) as e:
+                    logging.warning(f"Could not parse income from user input: '{user_input}'. Error: {e}")
+
+
+            # --- Special Handling for Logical Nodes ---
+            if state.current_node_id == "Logic_Split_Node_Financial_Qualification":
+                logging.info("Entering logical node: Logic_Split_Node_Financial_Qualification")
+                node_data = nodes.get(state.current_node_id, {})
+                transitions = node_data.get("transitions", [])
+
+                high_income_target = next((t['target'] for t in transitions if t.get('condition') == 'high_income'), None)
+                standard_income_target = next((t['target'] for t in transitions if t.get('condition') == 'standard_income'), None)
+
+                if not high_income_target or not standard_income_target:
+                    logging.error("Could not find valid high_income/standard_income transitions. Halting.")
+                    # Optionally, transition to an error-handling node
+                    # await self._transition_to_node("N_EndCall_Technical_Issue")
+                    # await self.on_enter()
+                    return
+
+                # Check if user_income has been set
+                if state.user_income is not None:
+                    if state.user_income >= 40000:
+                        logging.info(f"User income ({state.user_income}) is >= $40,000. Transitioning to high_income path.")
+                        chosen_target = high_income_target
+                    else:
+                        logging.info(f"User income ({state.user_income}) is < $40,000. Transitioning to standard_income path.")
+                        chosen_target = standard_income_target
+                else:
+                    # Fallback if income was not captured for some reason
+                    logging.warning("User income not found in state. Defaulting to standard_income path.")
+                    chosen_target = standard_income_target
+
+                await self._transition_to_node(chosen_target)
+                await self.on_enter()
+                return
+
             current_node = nodes.get(state.current_node_id)
             if not current_node:
                 logging.error(f"Node '{state.current_node_id}' not found in CALL_FLOW.")
@@ -441,15 +493,18 @@ class CallFlowAgent(Agent):
             transitions = current_node.get("transitions", [])
             if transitions:
                 evaluator = TransitionEvaluator(state)
-                for transition in transitions:
-                    condition_desc = transition.get("condition")
-                    if evaluator._check_condition(user_input, condition_desc):
-                        target_node_id = transition.get("target")
-                        logging.info(f"Deterministic transition triggered: '{condition_desc}' -> '{target_node_id}'")
-                        # In a deterministic transition, we always want the next node's script to play.
-                        await self._transition_to_node(target_node_id, suppress_script=False)
-                        await self.on_enter(suppress_script=False) # Explicitly call on_enter for the new node
-                        return # Transition taken, stop further processing
+
+                # Convert list of transitions to a dictionary for the evaluator
+                transition_conditions = {t.get("condition"): t.get("target") for t in transitions}
+
+                # Use the evaluator to find the first matching transition
+                condition_met, target_node_id, condition_desc = evaluator.evaluate_response(user_input, transition_conditions)
+
+                if condition_met:
+                    logging.info(f"Deterministic transition triggered: '{condition_desc}' -> '{target_node_id}'")
+                    await self._transition_to_node(target_node_id, suppress_script=False)
+                    await self.on_enter(suppress_script=False)
+                    return
 
             # 2. If no deterministic transition, use the ResponseOrchestrator
             logging.info(f"No deterministic transition found. Delegating to ResponseOrchestrator.")

@@ -18,9 +18,9 @@ CALL_FLOW = {
         "entry_context": "This is the AI's VERY FIRST utterance after the call connects and the prospect has likely said 'Hello?' or similar.",
         "prompt_notes": "CRITICAL - MUST BE Inquisitive, polite, slightly expectant, natural, and friendly with a clear upward vocal lilt. It should sound like you're genuinely and softly checking if you have the right person, inviting a simple confirmation.",
         "transitions": [
-            {"name": "NameConfirmed_ProceedToIntro", "condition": "affirmative_name_confirmation", "target": "N001B_IntroAndHelpRequest_Only"},
-            {"name": "WrongNumber_EndCall", "condition": "wrong_number_indicated", "target": "N_EndCall_Final_V2_Decisive"},
-            {"name": "AmbiguousResponse_ProceedToIntro", "condition": "ambiguous_name_confirmation", "target": "N001B_IntroAndHelpRequest_Only"}
+            {"name": "NameConfirmed_ProceedToIntro", "condition": "affirmative_name_confirmation", "description": "The user responds affirmatively, confirming their name, or responds without saying it's the wrong number.", "target": "N001B_IntroAndHelpRequest_Only"},
+            {"name": "WrongNumber_EndCall", "condition": "wrong_number_indicated", "description": "The user indicates it is the wrong number, that they are not the person the agent is looking for, or similar.", "target": "N_EndCall_Final_V2_Decisive"},
+            {"name": "AmbiguousResponse_ProceedToIntro", "condition": "ambiguous_name_confirmation", "description": "The user gives an ambiguous response, but does not indicate it's the wrong number.", "target": "N001B_IntroAndHelpRequest_Only"}
         ]
     },
     "N001B_IntroAndHelpRequest_Only": {
@@ -44,9 +44,9 @@ CALL_FLOW = {
         "entry_context": "Entered immediately after N001A_NameConfirmation_Only once the prospect has responded to their name being called. The user has just confirmed their name.",
         "prompt_notes": "CRITICAL - MUST BE polite, slightly hesitant, and clearly asking for a small favor. The tone should be inviting and non-threatening, encouraging a 'yes' or 'what is it about?' response.",
         "transitions": [
-            {"name": "AgreedToHelp_ProceedToOpener", "condition": "affirmative_intro_and_help_request", "target": "N_Opener_StackingIncomeHook_V3_CreativeTactic"},
-            {"name": "DeclinedToHelp_EndCall", "condition": "negative_intro_and_help_request", "target": "N_EndCall_Final_V2_Decisive"},
-            {"name": "Objection_CompanyQuestion", "condition": "objection_company_question", "target": "N_Opener_StackingIncomeHook_V3_CreativeTactic"}
+            {"name": "AgreedToHelp_ProceedToOpener", "condition": "affirmative_intro_and_help_request", "description": "Prospect provides any verbal response indicating they are willing to listen or help, such as 'Yes', 'Sure', 'Okay', 'What is it?'", "target": "N_Opener_StackingIncomeHook_V3_CreativeTactic"},
+            {"name": "DeclinedToHelp_EndCall", "condition": "negative_intro_and_help_request", "description": "Prospect declines to help or expresses they are not interested or busy.", "target": "N_EndCall_Final_V2_Decisive"},
+            {"name": "Objection_CompanyQuestion", "condition": "objection_company_question", "description": "Prospect asks for context about the caller or company.", "target": "N_Opener_StackingIncomeHook_V3_CreativeTactic"}
         ]
     },
     "N_Opener_StackingIncomeHook_V3_CreativeTactic": {
@@ -77,176 +77,71 @@ CALL_FLOW = {
         "entry_context": "This is an early-call node used to set the frame immediately after the user has confirmed their name or agreed to help. The agent has just introduced themselves and asked for a moment of time.",
         "prompt_notes": "CRITICAL - MUST BE direct, confident, and clearly state the core value proposition. The tone should be respectful of their time but assertive in conveying the benefit. The final question should invite a clear 'yes' or 'no' regarding permission to explain.",
         "transitions": [
-            {"name": "PermissionGranted_ProceedToModelIntro", "condition": "permission_granted", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"},
-            {"name": "NoRecall_PivotAndChallenge", "condition": "no_recall", "target": "N003_NoRecall_PivotAndChallenge_V18_FullyTuned"},
-            {"name": "ObjectionOrCallback_Deframe", "condition": "objection_or_callback_request", "target": "N003B_DeframeInitialObjection_V7_GoalOriented"},
-            {"name": "NotInterested_AskBackground", "condition": "not_interested", "target": "N_Obj_EarlyDismiss_AskShareBackground_V7"},
-            {"name": "NoTime_BluntCheck", "condition": "no_time", "target": "N_Obj_RealBusy_BluntCheck_V3_Adaptive"},
-            {"name": "Question_KB_Q&A", "condition": "question", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
-            {"name": "Ambiguous_ProceedToModelIntro", "condition": "ambiguous_opener_response", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"}
+            {"name": "PermissionGranted_ProceedToModelIntro", "condition": "permission_granted", "description": "This is triggered by them saying yes, sure, okay, something along the lines of agreeing to hear more or consenting to the call or asking what this is about.", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"},
+            {"name": "NoRecall_PivotAndChallenge", "condition": "no_recall", "description": "They flat out just say no. Or say It was something they might have done quickly. Basically they don't recall the ad and they don't throw any other objection.", "target": "N003_NoRecall_PivotAndChallenge_V18_FullyTuned"},
+            {"name": "ObjectionOrCallback_Deframe", "condition": "objection_or_callback_request", "description": "This could also be them saying yes, but call me back, or no and call me back. Also if they say they aren't interested", "target": "N003B_DeframeInitialObjection_V7_GoalOriented"},
+            {"name": "NotInterested_AskBackground", "condition": "not_interested", "description": "They say no and they also have an objection or question added with it. For instance them saying no and then asking a question e.g. No. What is this a markerting system? <- That would trigger this transition.", "target": "N_Obj_EarlyDismiss_AskShareBackground_V7"},
+            {"name": "NoTime_BluntCheck", "condition": "no_time", "description": "They respond they don't have time.", "target": "N_Obj_RealBusy_BluntCheck_V3_Adaptive"},
+            {"name": "Question_KB_Q&A", "condition": "question", "description": "Anything but 'Not interested' And/or while doing that they also as a question, make a statement, and/or throw an objection you need to be aware, handle it before saying the script in the next node.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
+            {"name": "Ambiguous_ProceedToModelIntro", "condition": "ambiguous_opener_response", "description": "Or basically anything that doesn't fit the other transitions.", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"}
         ]
     },
     "N_IntroduceModel_And_AskQuestions_V3_Adaptive": {
         "goal": "To deliver a concise, high-level summary of the business model and then proactively ask an open-ended question to surface the user's initial thoughts or concerns.",
         "speak_script": ["Okay. In a nutshell, we set up passive income websites, and we let them produce income for you.", "What questions come to mind as soon as you hear something like that?"],
-        "reask_variants": ["Do you have any questions about that?", "What are your initial thoughts?"],
-        "patient_listening": True,
-        "allows_interruptions": True,
-        "guardrails": [
-            "NO DASHES FOR PAUSES/CONJUNCTIONS",
-            "\"I'll\" PRONUNCIATION",
-            "ADHERENCE TO GLOBAL TTS RULES"
-        ],
-        "local_toolkit": [], # No specific local tactics, relies on KB for questions
-        "escalation_policy": {
-            "max_local_tactics": 0,
-            "allow_global_handler": True
-        },
-        "entry_context": "You are entering this node after the user has shown initial interest and is ready for a basic explanation of what the program does. The agent has just secured permission to explain further.",
-        "prompt_notes": "CRITICAL - MUST BE clear, concise, and immediately follow with an open-ended question to encourage engagement. The tone should be informative and inviting, not pushy.",
         "transitions": [
-            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
-            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
+            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "description": "The user responds by asking a question.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
+            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "description": "The user gives a general, non-question response.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
         ]
     },
     "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Dominant": {
         "goal": "To deliver a concise, high-level summary of the business model and then proactively ask an open-ended question to surface the user's initial thoughts or concerns (Dominant personality variant).",
         "speak_script": ["Okay. In a nutshell, we set up passive income websites that generate revenue with minimal ongoing effort.", "What's the biggest concern you have about this model?"],
-        "reask_variants": ["What's your primary concern?", "What questions do you have?"],
-        "patient_listening": True,
-        "allows_interruptions": True,
-        "guardrails": [
-            "NO DASHES FOR PAUSES/CONJUNCTIONS",
-            "\"I'll\" PRONUNCIATION",
-            "ADHERENCE TO GLOBAL TTS RULES"
-        ],
-        "local_toolkit": [],
-        "escalation_policy": {
-            "max_local_tactics": 0,
-            "allow_global_handler": True
-        },
-        "entry_context": "You are entering this node after the user has shown initial interest and is ready for a basic explanation of what the program does. The user has been classified as having a Dominant personality type.",
-        "prompt_notes": "CRITICAL - MUST BE direct, confident, and immediately follow with a question that challenges them to state their biggest concern. The tone should be assertive and efficient.",
         "transitions": [
-            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
-            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
+            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "description": "The user responds by asking a question.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
+            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "description": "The user gives a general, non-question response.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
         ]
     },
     "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Influential": {
         "goal": "To deliver a concise, high-level summary of the business model and then proactively ask an open-ended question to surface the user's initial thoughts or concerns (Influential personality variant).",
         "speak_script": ["Okay. In a nutshell, we set up passive income websites, and we let them produce income for you. Isn't that exciting?", "What aspects of this do you find most interesting?"],
-        "reask_variants": ["What excites you most about this?", "What piques your interest?"],
-        "patient_listening": True,
-        "allows_interruptions": True,
-        "guardrails": [
-            "NO DASHES FOR PAUSES/CONJUNCTIONS",
-            "\"I'll\" PRONUNCIATION",
-            "ADHERENCE TO GLOBAL TTS RULES"
-        ],
-        "local_toolkit": [],
-        "escalation_policy": {
-            "max_local_tactics": 0,
-            "allow_global_handler": True
-        },
-        "entry_context": "You are entering this node after the user has shown initial interest and is ready for a basic explanation of what the program does. The user has been classified as having an Influential personality type.",
-        "prompt_notes": "CRITICAL - MUST BE enthusiastic, engaging, and immediately follow with a question that invites them to share their excitement. The tone should be positive and inspiring.",
         "transitions": [
-            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
-            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
+            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "description": "The user responds by asking a question.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
+            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "description": "The user gives a general, non-question response.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
         ]
     },
     "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady": {
         "goal": "To deliver a concise, high-level summary of the business model and then proactively ask an open-ended question to surface the user's initial thoughts or concerns (Steady personality variant).",
         "speak_script": ["Okay. In a nutshell, we set up passive income websites, and we let them produce income for you.", "Take your time to think about it. What questions come to mind as you consider this opportunity?"],
-        "reask_variants": ["What questions do you have?", "What are your thoughts on this?"],
-        "patient_listening": True,
-        "allows_interruptions": True,
-        "guardrails": [
-            "NO DASHES FOR PAUSES/CONJUNCTIONS",
-            "\"I'll\" PRONUNCIATION",
-            "ADHERENCE TO GLOBAL TTS RULES"
-        ],
-        "local_toolkit": [],
-        "escalation_policy": {
-            "max_local_tactics": 0,
-            "allow_global_handler": True
-        },
-        "entry_context": "You are entering this node after the user has shown initial interest and is ready for a basic explanation of what the program does. The user has been classified as having a Steady personality type.",
-        "prompt_notes": "CRITICAL - MUST BE calm, reassuring, and immediately follow with a question that encourages thoughtful consideration. The tone should be patient and supportive.",
         "transitions": [
-            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
-            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
+            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "description": "The user responds by asking a question.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
+            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "description": "The user gives a general, non-question response.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
         ]
     },
     "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Conscientious": {
         "goal": "To deliver a concise, high-level summary of the business model and then proactively ask an open-ended question to surface the user's initial thoughts or concerns (Conscientious personality variant).",
         "speak_script": ["Okay. In a nutshell, we set up passive income websites, and we let them produce income for you.", "I can provide more detailed information about the process if you'd like. What specific aspects would you like to know more about?"],
-        "reask_variants": ["What details are you curious about?", "What specific information can I provide?"],
-        "patient_listening": True,
-        "allows_interruptions": True,
-        "guardrails": [
-            "NO DASHES FOR PAUSES/CONJUNCTIONS",
-            "\"I'll\" PRONUNCIATION",
-            "ADHERENCE TO GLOBAL TTS RULES"
-        ],
-        "local_toolkit": [],
-        "escalation_policy": {
-            "max_local_tactics": 0,
-            "allow_global_handler": True
-        },
-        "entry_context": "You are entering this node after the user has shown initial interest and is ready for a basic explanation of what the program does. The user has been classified as having a Conscientious personality type.",
-        "prompt_notes": "CRITICAL - MUST BE precise, offer additional detail, and immediately follow with a question that invites specific inquiries. The tone should be thorough and helpful.",
         "transitions": [
-            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
-            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
+            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "description": "The user responds by asking a question.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
+            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "description": "The user gives a general, non-question response.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
         ]
     },
     "N_IntroduceModel_And_AskQuestions_V3_Adaptive_HighEngagement": {
         "goal": "To deliver a concise, high-level summary of the business model and then proactively ask an open-ended question to surface the user's initial thoughts or concerns (High engagement variant).",
         "speak_script": ["Great! I can tell you're really engaged with this. In a nutshell, we set up passive income websites, and we let them produce income for you.", "Since you seem interested, what specific aspects would you like to know more about?"],
-        "reask_variants": ["What else can I clarify?", "What specific details are you interested in?"],
-        "patient_listening": True,
-        "allows_interruptions": True,
-        "guardrails": [
-            "NO DASHES FOR PAUSES/CONJUNCTIONS",
-            "\"I'll\" PRONUNCIATION",
-            "ADHERENCE TO GLOBAL TTS RULES"
-        ],
-        "local_toolkit": [],
-        "escalation_policy": {
-            "max_local_tactics": 0,
-            "allow_global_handler": True
-        },
-        "entry_context": "You are entering this node after the user has shown high engagement and interest. They've asked questions or made positive comments.",
-        "prompt_notes": "CRITICAL - MUST BE enthusiastic, acknowledge their engagement, and immediately follow with a question that invites specific inquiries. The tone should be highly responsive and encouraging.",
         "transitions": [
-            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
-            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
+            {"name": "UserAsksQuestion_ProceedToKB", "condition": "user_asks_question", "description": "The user responds by asking a question.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
+            {"name": "UserRespondsGenerally_ProceedToKB", "condition": "general_response", "description": "The user gives a general, non-question response.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"}
         ]
     },
     "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive": {
         "goal": "To dynamically answer the user's questions using the `qualifier setter` KB, ensure the core income potential has been discussed, and then deliver the '$20k' value-framing question.",
-        "speak_script": [], # Script will be dynamically generated by KB
-        "reask_variants": ["Do you have any other questions?", "What else can I clarify for you?"],
-        "patient_listening": True,
-        "allows_interruptions": True,
-        "guardrails": [
-            "NO DASHES FOR PAUSES/CONJUNCTIONS",
-            "\"I'll\" PRONUNCIATION",
-            "ADHERENCE TO GLOBAL TTS RULES"
-        ],
-        "local_toolkit": [], # KB handles dynamic responses, no fixed tactics here
-        "escalation_policy": {
-            "max_local_tactics": 0,
-            "allow_global_handler": True
-        },
-        "entry_context": "You are entering this node after the user has acknowledged the 'Rank and Bank' concept and is asking questions. The agent's previous utterance was an open-ended question inviting questions.",
-        "prompt_notes": "CRITICAL - The primary goal is to answer the user's question using the KB. After answering, if the core income potential has not been discussed, pivot to the '$20k' value-framing question. If it has, transition to the next qualification node. Maintain a helpful, informative, and confident tone.",
+        "speak_script": [],
         "transitions": [
-            {"name": "AnsweredQuestion_ProceedToWorkIncome", "condition": "answered_question_and_ready_for_next_step", "target": "N200_Super_WorkAndIncomeBackground_V3_Adaptive"},
-            {"name": "UserAsksAnotherQuestion_StayInKB", "condition": "user_asks_another_question", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
-            {"name": "PositiveResponseTo20k_ProceedToWorkIncome", "condition": "positive_response_to_20k_question", "target": "N200_Super_WorkAndIncomeBackground_V3_Adaptive"},
-            {"name": "AmbiguousResponse_ReaskOrProceed", "condition": "ambiguous_response_after_kb", "target": "N200_Super_WorkAndIncomeBackground_V3_Adaptive"} # Default if no clear question or positive response
+            {"name": "AnsweredQuestion_ProceedToWorkIncome", "condition": "answered_question_and_ready_for_next_step", "description": "The user has no more questions and is ready to move on.", "target": "N200_Super_WorkAndIncomeBackground_V3_Adaptive"},
+            {"name": "UserAsksAnotherQuestion_StayInKB", "condition": "user_asks_another_question", "description": "The user asks another question.", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
+            {"name": "PositiveResponseTo20k_ProceedToWorkIncome", "condition": "positive_response_to_20k_question", "description": "The user responds positively to the '$20k' question (e.g., 'No, who would be?', 'That would be great,' 'Of course not', 'Who would').", "target": "N200_Super_WorkAndIncomeBackground_V3_Adaptive"},
+            {"name": "AmbiguousResponse_ReaskOrProceed", "condition": "ambiguous_response_after_kb", "description": "The user gives an ambiguous response after a KB answer.", "target": "N200_Super_WorkAndIncomeBackground_V3_Adaptive"}
         ]
     },
     "N003B_DeframeInitialObjection_V7_GoalOriented": {
@@ -255,7 +150,8 @@ CALL_FLOW = {
         "script": "When you say you're not interested, is that because you feel you're already completely set with your current income and have all the free time you could possibly want?",
         "strict_script": False,
         "transitions": [
-            {"name": "CuriosityOrInterest_ProceedToModelIntro", "condition": "curiosity_or_interest_expressed", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"}
+            {"name": "CuriosityOrInterest_ProceedToModelIntro", "condition": "curiosity_or_interest_expressed", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"},
+            {"name": "Fallback_Escalate", "condition": "any_response", "target": "N_Obj_EarlyDismiss_DirectValueChallenge_V9_EscalationEnabled"}
         ]
     },
     "N003_NoRecall_PivotAndChallenge_V18_FullyTuned": {
@@ -843,6 +739,11 @@ CALL_FLOW = {
         "strict_script": False,
         "transitions": [
             {
+                "name": "UnsureAboutPartner",
+                "condition": "unsure",
+                "target": "N017D_SuggestPartnerCheck_ScheduleFollowUpCall"
+            },
+            {
                 "name": "PartnerAvailable",
                 "condition": "affirmative",
                 "target": "N_ConfirmCommitment_FinalCheck_V1_Adaptive"
@@ -851,11 +752,6 @@ CALL_FLOW = {
                 "name": "PartnerNotAvailable",
                 "condition": "negative",
                 "target": "N_Scheduling_RescheduleAndHandle_V5_FullyTuned"
-            },
-            {
-                "name": "UnsureAboutPartner",
-                "condition": "unsure",
-                "target": "N017D_SuggestPartnerCheck_ScheduleFollowUpCall"
             },
             {
                 "name": "Ambiguous_DefaultToAvailable",
@@ -867,8 +763,7 @@ CALL_FLOW = {
     "N017D_SuggestPartnerCheck_ScheduleFollowUpCall": {
         "goal": "When a prospect is unsure of their partner's availability, ask when they can find out, and then propose a brief follow-up call.",
         "context": "Entered because the prospect stated they don't know the other decision-maker's schedule.",
-        "script_part1": "[Acknowledge uncertainty]. When’s the soonest you can get in touch with them to find out if that time works?",
-        "script_part2": "[Acknowledge timeframe]. So here’s what we’re gonna do then. I want you to talk to your [partner] and find out what time will work for the both of you. Then around [suggested follow-up time] I’ll give you a quick ring and we’ll lock in an official time on the calendar. Sound fair?",
+        "speak_script": ["No problem. Why don't you check with them and see what time works best? I can give you a quick call back tomorrow to lock it in. Does that sound fair?"],
         "strict_script": False,
         "transitions": [
             {
