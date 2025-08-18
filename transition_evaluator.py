@@ -33,7 +33,7 @@ class TransitionEvaluator:
             "objection_company_question": [re.compile(r'\b(who are you|what company|who is this|where you from)\b', re.IGNORECASE)],
             "permission_granted": [re.compile(r'\b(go ahead|sure|okay|yes|what is it|fine)\b', re.IGNORECASE)],
             "no_recall": [re.compile(r'\b(don\'t recall|don\'t remember|what was that|no)\b', re.IGNORECASE)],
-            "objection_or_callback_request": [re.compile(r'\b(call me back|later|another time)\b', re.IGNORECASE)],
+            "objection_or_callback_request": [re.compile(r'\b(call me back|later|another time|not sure|skeptical|don\'t know|sounds like|what is this|i don\'t understand)\b', re.IGNORECASE)],
             "not_interested": [re.compile(r'\b(not interested|no thanks|i\'m good|don\'t want|remove me)\b', re.IGNORECASE)],
             "no_time": [re.compile(r'\b(no time|i\'m busy|in a meeting)\b', re.IGNORECASE)],
             "question": [re.compile(r'\b(what is this about|what\'s this regarding|what do you want|why)\b', re.IGNORECASE)],
@@ -42,6 +42,26 @@ class TransitionEvaluator:
             "callback_requested": [re.compile(r'\b(call me back|later|another time)\b', re.IGNORECASE)],
             "shows_interest": [re.compile(r'\b(yes|i am|that sounds interesting|tell me more|possibly|maybe|what\'s it about)\b', re.IGNORECASE)],
             "disinterested": [re.compile(r'\b(no|not interested|i\'m good)\b', re.IGNORECASE)],
+            "user_asks_question": [re.compile(r'\b(what|how|why|when|where|who)\b|\?', re.IGNORECASE)],
+            "general_response": [re.compile(r'\b(okay|sure|right|got it|makes sense|alright|cool)\b', re.IGNORECASE)],
+            "agrees_to_hear_background": [re.compile(r'\b(yes|sure|okay|go ahead|fine|alright|i guess)\b', re.IGNORECASE)],
+            "declines_to_hear_background": [re.compile(r'\b(no|not really|i\'m good|no thanks|don\'t want to)\b', re.IGNORECASE)],
+            "ambiguous_response": [re.compile(r'\b(hmm|uh|well|maybe)\b', re.IGNORECASE)],
+            "meeting_coming_up": [re.compile(r'\b(meeting|appointment|call|have to go|gotta run)\b', re.IGNORECASE)],
+            "not_sure_why_listening": [re.compile(r'\b(not sure|don\'t understand|what is this for|why am i listening)\b', re.IGNORECASE)],
+            "employed": [re.compile(r'\b(working for someone|employed|have a job|work for|an employee)\b', re.IGNORECASE)],
+            "business_owner": [re.compile(r'\b(own business|run my own|self-employed|entrepreneur|i have a business)\b', re.IGNORECASE)],
+            "unemployed": [re.compile(r'\b(unemployed|not working|in between jobs|laid off|no job)\b', re.IGNORECASE)],
+            "affirmative": [re.compile(r'\b(yes|yeah|yep|yup|sure|okay|correct|right|sounds good|i do|i have|affirmative)\b', re.IGNORECASE)],
+            "negative": [re.compile(r'\b(no|nope|nah|not really|i don\'t|i do not|negative)\b', re.IGNORECASE)],
+            "score_over_650": [re.compile(r'\b(yes|yeah|yep|sure|i do|it is|over)\b|[7-9]\d{2}|6[5-9]\d', re.IGNORECASE)],
+            "score_under_650": [re.compile(r'\b(no|nope|nah|don\'t think so|under|it is not)\b|[0-5]\d{2}|6[0-4]\d', re.IGNORECASE)],
+            "motivation_provided": [re.compile(r'\b(because|reason is|looking for|want to|need to|tired of|sick of|i want|i need)\b', re.IGNORECASE)],
+            "time_given": [re.compile(r'\d+|in a few|in a moment|minute|hour|o\'clock', re.IGNORECASE)],
+            "vague_time": [re.compile(r'\b(soon|shortly|later|in a bit|after this|sometime)\b', re.IGNORECASE)],
+            "partner_involved": [re.compile(r'\b(yes|i do|partner|spouse|wife|husband|business partner|someone else)\b', re.IGNORECASE)],
+            "no_partner_involved": [re.compile(r'\b(no|i don\'t|just me|myself|all me)\b', re.IGNORECASE)],
+            "unsure": [re.compile(r'\b(not sure|don\'t know|have to check|maybe|i guess|i think so)\b', re.IGNORECASE)],
         }
 
     def evaluate_response(self, user_input: str, transition_conditions: Dict[str, str]) -> Tuple[bool, Optional[str], str]:
@@ -55,6 +75,12 @@ class TransitionEvaluator:
             if self._check_condition(user_input, condition_desc):
                 logging.info(f"Transition condition met: '{condition_desc}' -> {target_node}")
                 return True, target_node, condition_desc
+
+        # Check for 'any_response' as a condition before 'default'
+        if 'any_response' in transition_conditions:
+            target_node = transition_conditions['any_response']
+            logging.info(f"Condition 'any_response' met as a fallback. Transitioning to {target_node}")
+            return True, target_node, 'any_response'
 
         if 'default' in transition_conditions:
             target_node = transition_conditions['default']
