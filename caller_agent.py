@@ -7,6 +7,7 @@ import asyncio # Ensure asyncio is imported
 import re
 
 from livekit.agents import Agent, function_tool, RunContext, llm
+from livekit.plugins import openai
 from call_flow import CALL_FLOW
 # Provide a patchable proxy for CALL_FLOW to satisfy tests that patch caller_agent.nodes.get
 class _NodesProxy:
@@ -141,6 +142,11 @@ class CallFlowAgent(Agent):
         self.disc_classifier = DISCClassifier()
         self.kb_processor = KBProcessor()
         self.conversation_state_manager = ConversationStateManager()
+
+        # LLM for semantic evaluation
+        self.llm = openai.LLM()
+        self.transition_evaluator = TransitionEvaluator(initial_state, self.llm)
+
         self.response_orchestrator = ResponseOrchestrator(initial_state, self.conversation_state_manager, self.kb_processor)
         self.script_tracker = NodeScriptTracker()
         self._session = None
@@ -161,6 +167,12 @@ class CallFlowAgent(Agent):
         Returns True if spoken completely, False if interrupted.
         """
         try:
+            # Check if TTS is configured. If not, fallback to console print.
+            if not self.session.tts:
+                print(f"AGENT: {text}")
+                # In text-only mode, we can't be interrupted.
+                return True
+
             say_fn = getattr(self.session, "say", None)
             if not say_fn:
                 logging.error("Session.say not available")
@@ -437,22 +449,16 @@ class CallFlowAgent(Agent):
                 await self._transition_to_node("N_EndCall_Technical_Issue")
                 return
 
-            # 1. Check for deterministic transitions first
-            transitions = current_node.get("transitions", [])
-            if transitions:
-                evaluator = TransitionEvaluator(state)
-                for transition in transitions:
-                    condition_desc = transition.get("condition")
-                    if evaluator._check_condition(user_input, condition_desc):
-                        target_node_id = transition.get("target")
-                        logging.info(f"Deterministic transition triggered: '{condition_desc}' -> '{target_node_id}'")
-                        # In a deterministic transition, we always want the next node's script to play.
-                        await self._transition_to_node(target_node_id, suppress_script=False)
-                        await self.on_enter(suppress_script=False) # Explicitly call on_enter for the new node
-                        return # Transition taken, stop further processing
+            # 1. Check for semantic transitions first
+            condition_met, target_node_id, condition_desc = await self.transition_evaluator.evaluate_response(user_input, current_node)
+            if condition_met:
+                logging.info(f"Semantic transition triggered: '{condition_desc}' -> '{target_node_id}'")
+                await self._transition_to_node(target_node_id, suppress_script=False)
+                await self.on_enter(suppress_script=False)
+                return
 
             # 2. If no deterministic transition, use the ResponseOrchestrator
-            logging.info(f"No deterministic transition found. Delegating to ResponseOrchestrator.")
+            logging.info(f"No semantic transition found. Delegating to ResponseOrchestrator.")
             
             node_data = {
                 'id': state.current_node_id,

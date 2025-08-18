@@ -243,9 +243,9 @@ CALL_FLOW = {
         "entry_context": "You are entering this node after the user has acknowledged the 'Rank and Bank' concept and is asking questions. The agent's previous utterance was an open-ended question inviting questions.",
         "prompt_notes": "CRITICAL - The primary goal is to answer the user's question using the KB. After answering, if the core income potential has not been discussed, pivot to the '$20k' value-framing question. If it has, transition to the next qualification node. Maintain a helpful, informative, and confident tone.",
         "transitions": [
-            {"name": "AnsweredQuestion_ProceedToWorkIncome", "condition": "answered_question_and_ready_for_next_step", "target": "N200_Super_WorkAndIncomeBackground_V3_Adaptive"},
-            {"name": "UserAsksAnotherQuestion_StayInKB", "condition": "user_asks_another_question", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
             {"name": "PositiveResponseTo20k_ProceedToWorkIncome", "condition": "positive_response_to_20k_question", "target": "N200_Super_WorkAndIncomeBackground_V3_Adaptive"},
+            {"name": "UserAsksAnotherQuestion_StayInKB", "condition": "user_asks_another_question", "target": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"},
+            {"name": "AnsweredQuestion_ProceedToWorkIncome", "condition": "answered_question_and_ready_for_next_step", "target": "N200_Super_WorkAndIncomeBackground_V3_Adaptive"},
             {"name": "AmbiguousResponse_ReaskOrProceed", "condition": "ambiguous_response_after_kb", "target": "N200_Super_WorkAndIncomeBackground_V3_Adaptive"} # Default if no clear question or positive response
         ]
     },
@@ -484,7 +484,8 @@ CALL_FLOW = {
         "strict_script": False,
         "transitions": [
             {"name": "HighIncome", "condition": "high_income", "target": "N_AskCapital_15k_V1_Adaptive"},
-            {"name": "StandardIncome", "condition": "standard_income", "target": "N_AskCapital_5k_Direct_V1_Adaptive"}
+            {"name": "StandardIncome", "condition": "standard_income", "target": "N_AskCapital_5k_Direct_V1_Adaptive"},
+            {"name": "DefaultToStandardIncome", "condition": "default", "target": "N_AskCapital_5k_Direct_V1_Adaptive"}
         ]
     },
     "N_AskCapital_5k_Direct_V1_Adaptive": {
