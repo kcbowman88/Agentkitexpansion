@@ -144,8 +144,8 @@ class CallFlowAgent(Agent):
         self.conversation_state_manager = ConversationStateManager()
 
         # LLM for semantic evaluation
-        self.llm = openai.LLM()
-        self.transition_evaluator = TransitionEvaluator(initial_state, self.llm)
+        self.transition_llm = openai.LLM()
+        self.transition_evaluator = TransitionEvaluator(initial_state, self.transition_llm)
 
         self.response_orchestrator = ResponseOrchestrator(initial_state, self.conversation_state_manager, self.kb_processor)
         self.script_tracker = NodeScriptTracker()
