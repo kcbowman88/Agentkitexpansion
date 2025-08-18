@@ -255,7 +255,8 @@ CALL_FLOW = {
         "script": "When you say you're not interested, is that because you feel you're already completely set with your current income and have all the free time you could possibly want?",
         "strict_script": False,
         "transitions": [
-            {"name": "CuriosityOrInterest_ProceedToModelIntro", "condition": "curiosity_or_interest_expressed", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"}
+            {"name": "CuriosityOrInterest_ProceedToModelIntro", "condition": "curiosity_or_interest_expressed", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"},
+            {"name": "Default_EscalateObjection", "condition": "default", "target": "N_Obj_EarlyDismiss_DirectValueChallenge_V9_EscalationEnabled"}
         ]
     },
     "N003_NoRecall_PivotAndChallenge_V18_FullyTuned": {
@@ -266,7 +267,8 @@ CALL_FLOW = {
         "transitions": [
             {"name": "CallbackRequested", "condition": "callback_requested", "target": "N_Obj_RealBusy_BluntCheck_V3_Adaptive"},
             {"name": "ShowsInterest", "condition": "shows_interest", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"},
-            {"name": "Disinterested", "condition": "disinterested", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"}
+            {"name": "Disinterested", "condition": "disinterested", "target": "N_EndCall_Final_V2_Decisive"},
+            {"name": "Default_ShowsInterest", "condition": "default", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"}
         ]
     },
     "N_Obj_EarlyDismiss_AskShareBackground_V7": {
@@ -286,7 +288,7 @@ CALL_FLOW = {
         "script": "Great. I'm a military veteran and I have a software engineering degree, so trust me I get how much nonsense is out there. But after actually going through this program myself, I’ve seen firsthand it's possible for people to pull in an extra 20,000 a month, sometimes even more. Any idea what makes that possible?",
         "strict_script": False,
         "transitions": [
-            {"name": "AnyResponse_ProceedToExplanation", "condition": "any_response", "target": "N_Obj_EarlyDismiss_ShareBackgroundAskWhy"}
+            {"name": "AnyResponse_ProceedToExplanation", "condition": "default", "target": "N_Obj_EarlyDismiss_ShareBackgroundAskWhy"}
         ]
     },
     "N_Obj_EarlyDismiss_DirectValueChallenge_V9_EscalationEnabled": {
@@ -296,7 +298,7 @@ CALL_FLOW = {
         "strict_script": False,
         "transitions": [
             {"name": "ShowsInterest_Proceed", "condition": "still_interested", "target": "N_Obj_EarlyDismiss_ConnectToCurrentCall_V5_LeadOut"},
-            {"name": "AmbiguousResponse_Proceed", "condition": "any_response", "target": "N_Obj_EarlyDismiss_ConnectToCurrentCall_V5_LeadOut"}
+            {"name": "AmbiguousResponse_Proceed", "condition": "default", "target": "N_Obj_EarlyDismiss_ConnectToCurrentCall_V5_LeadOut"}
         ]
     },
     "N_Obj_EarlyDismiss_ConnectToCurrentCall_V5_LeadOut": {
@@ -306,7 +308,7 @@ CALL_FLOW = {
         "strict_script": False,
         "transitions": [
             {"name": "AgreesToExplore_Proceed", "condition": "exploration_agreed", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"},
-            {"name": "AmbiguousResponse_Proceed", "condition": "any_response", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"}
+            {"name": "AmbiguousResponse_Proceed", "condition": "default", "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"}
         ]
     },
     "N200_Super_WorkAndIncomeBackground_V3_Adaptive": {
@@ -330,7 +332,7 @@ CALL_FLOW = {
             {"name": "IsEmployed", "condition": "employed", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"},
             {"name": "IsBusinessOwner", "condition": "business_owner", "target": "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned"},
             {"name": "IsUnemployed", "condition": "unemployed", "target": "N201E_Unemployed_EmpathyAskPastYearlyIncome_V5_Adaptive"},
-            {"name": "Ambiguous_DefaultToEmployed", "condition": "default", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"}
+            {"name": "Ambiguous_DefaultToEmployed", "condition": "any_response", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"}
         ]
     },
     "N200_Super_WorkAndIncomeBackground_V3_Adaptive_Influential": {
@@ -342,7 +344,7 @@ CALL_FLOW = {
             {"name": "IsEmployed", "condition": "employed", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"},
             {"name": "IsBusinessOwner", "condition": "business_owner", "target": "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned"},
             {"name": "IsUnemployed", "condition": "unemployed", "target": "N201E_Unemployed_EmpathyAskPastYearlyIncome_V5_Adaptive"},
-            {"name": "Ambiguous_DefaultToEmployed", "condition": "default", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"}
+            {"name": "Ambiguous_DefaultToEmployed", "condition": "any_response", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"}
         ]
     },
     "N200_Super_WorkAndIncomeBackground_V3_Adaptive_Steady": {
@@ -354,7 +356,7 @@ CALL_FLOW = {
             {"name": "IsEmployed", "condition": "employed", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"},
             {"name": "IsBusinessOwner", "condition": "business_owner", "target": "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned"},
             {"name": "IsUnemployed", "condition": "unemployed", "target": "N201E_Unemployed_EmpathyAskPastYearlyIncome_V5_Adaptive"},
-            {"name": "Ambiguous_DefaultToEmployed", "condition": "default", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"}
+            {"name": "Ambiguous_DefaultToEmployed", "condition": "any_response", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"}
         ]
     },
     "N200_Super_WorkAndIncomeBackground_V3_Adaptive_Conscientious": {
@@ -366,7 +368,7 @@ CALL_FLOW = {
             {"name": "IsEmployed", "condition": "employed", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"},
             {"name": "IsBusinessOwner", "condition": "business_owner", "target": "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned"},
             {"name": "IsUnemployed", "condition": "unemployed", "target": "N201E_Unemployed_EmpathyAskPastYearlyIncome_V5_Adaptive"},
-            {"name": "Ambiguous_DefaultToEmployed", "condition": "default", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"}
+            {"name": "Ambiguous_DefaultToEmployed", "condition": "any_response", "target": "N201A_Employed_AskYearlyIncome_V8_Adaptive"}
         ]
     },
     "N201A_Employed_AskYearlyIncome_V8_Adaptive": {
@@ -375,7 +377,7 @@ CALL_FLOW = {
         "script": "Got it. And what's that job producing for you yearly, approximately?",
         "strict_script": False,
         "transitions": [
-            {"name": "IncomeProvided_ProceedToSideHustle", "condition": "default", "target": "N201B_Employed_AskSideHustle_V4_FullyTuned"}
+            {"name": "IncomeProvided_ProceedToSideHustle", "condition": "any_response", "target": "N201B_Employed_AskSideHustle_V4_FullyTuned"}
         ]
     },
     "N201E_Unemployed_EmpathyAskPastYearlyIncome_V5_Adaptive": {
@@ -384,7 +386,7 @@ CALL_FLOW = {
         "script": "Okay, I'm genuinely sorry to hear that. When you were working, what was that job producing for you yearly, roughly?",
         "strict_script": False,
         "transitions": [
-            {"name": "PastIncomeProvided_ProceedToSideHustle", "condition": "default", "target": "N201F_Unemployed_AskSideHustle_V4_FullyTuned"}
+            {"name": "PastIncomeProvided_ProceedToSideHustle", "condition": "any_response", "target": "N201F_Unemployed_AskSideHustle_V4_FullyTuned"}
         ]
     },
     "N201B_Employed_AskSideHustle_V4_FullyTuned": {
@@ -395,7 +397,7 @@ CALL_FLOW = {
         "transitions": [
             {"name": "HasSideHustle", "condition": "affirmative", "target": "N201C_Employed_AskSideHustleAmount_V3_FullyTuned"},
             {"name": "NoSideHustle", "condition": "negative", "target": "N201D_Employed_AskVehicleQ_V5_Adaptive"},
-            {"name": "Ambiguous_DefaultToNoSideHustle", "condition": "default", "target": "N201D_Employed_AskVehicleQ_V5_Adaptive"}
+            {"name": "Ambiguous_DefaultToNoSideHustle", "condition": "any_response", "target": "N201D_Employed_AskVehicleQ_V5_Adaptive"}
         ]
     },
     "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned": {
@@ -404,7 +406,7 @@ CALL_FLOW = {
         "script": "Okay. As a business owner, where's your monthly revenue at right now, roughly?",
         "strict_script": False,
         "transitions": [
-            {"name": "RevenueProvided_ProceedToHighestMonth", "condition": "default", "target": "N202B_AskHighestRevenueMonth_V4_FullyTuned"}
+            {"name": "RevenueProvided_ProceedToHighestMonth", "condition": "any_response", "target": "N202B_AskHighestRevenueMonth_V4_FullyTuned"}
         ]
     },
     "N201F_Unemployed_AskSideHustle_V4_FullyTuned": {
@@ -415,7 +417,7 @@ CALL_FLOW = {
         "transitions": [
             {"name": "HasSideHustle", "condition": "affirmative", "target": "N201G_Unemployed_AskSideHustleAmount"},
             {"name": "NoSideHustle", "condition": "negative", "target": "N201H_Unemployed_AskVehicleQ_V4_FullyTuned"},
-            {"name": "Ambiguous_DefaultToNoSideHustle", "condition": "default", "target": "N201H_Unemployed_AskVehicleQ_V4_FullyTuned"}
+            {"name": "Ambiguous_DefaultToNoSideHustle", "condition": "any_response", "target": "N201H_Unemployed_AskVehicleQ_V4_FullyTuned"}
         ]
     },
     "N201C_Employed_AskSideHustleAmount_V3_FullyTuned": {
@@ -424,7 +426,7 @@ CALL_FLOW = {
         "script": "Okay, great. And what was that side hustle bringing in for you, say, on a good month?",
         "strict_script": False,
         "transitions": [
-            {"name": "AmountProvided_ProceedToVehicleQ", "condition": "default", "target": "N201D_Employed_AskVehicleQ_V5_Adaptive"}
+            {"name": "AmountProvided_ProceedToVehicleQ", "condition": "any_response", "target": "N201D_Employed_AskVehicleQ_V5_Adaptive"}
         ]
     },
     "N202B_AskHighestRevenueMonth_V4_FullyTuned": {
@@ -433,7 +435,7 @@ CALL_FLOW = {
         "script": "And in the last two years, what was the highest monthly revenue point your business hit?",
         "strict_script": False,
         "transitions": [
-            {"name": "HighestRevenueProvided_ProceedToVehicleQ", "condition": "default", "target": "N202C_AskVehicleQuestion_BusinessOwner_V4_Adaptive"}
+            {"name": "HighestRevenueProvided_ProceedToVehicleQ", "condition": "any_response", "target": "N202C_AskVehicleQuestion_BusinessOwner_V4_Adaptive"}
         ]
     },
     "N201G_Unemployed_AskSideHustleAmount": {
@@ -442,7 +444,7 @@ CALL_FLOW = {
         "script": "Okay, great. And what does that side hustle bring in for you monthly, roughly?",
         "strict_script": False,
         "transitions": [
-            {"name": "AmountProvided_ProceedToVehicleQ", "condition": "default", "target": "N201H_Unemployed_AskVehicleQ_V4_FullyTuned"}
+            {"name": "AmountProvided_ProceedToVehicleQ", "condition": "any_response", "target": "N201H_Unemployed_AskVehicleQ_V4_FullyTuned"}
         ]
     },
     "N201D_Employed_AskVehicleQ_V5_Adaptive": {
@@ -452,7 +454,7 @@ CALL_FLOW = {
         "strict_script": False,
         "transitions": [
             {"name": "AffirmsVehicle_ProceedToFinancialQual", "condition": "affirmative", "target": "Logic_Split_Node_Financial_Qualification"},
-            {"name": "DoesNotAffirmVehicle_ProceedToFinancialQual", "condition": "default", "target": "Logic_Split_Node_Financial_Qualification"}
+            {"name": "DoesNotAffirmVehicle_ProceedToFinancialQual", "condition": "any_response", "target": "Logic_Split_Node_Financial_Qualification"}
         ]
     },
     "N202C_AskVehicleQuestion_BusinessOwner_V4_Adaptive": {
@@ -462,7 +464,7 @@ CALL_FLOW = {
         "strict_script": False,
         "transitions": [
             {"name": "AffirmsVehicle_ProceedToFinancialQual", "condition": "affirmative", "target": "Logic_Split_Node_Financial_Qualification"},
-            {"name": "DoesNotAffirmVehicle_ProceedToFinancialQual", "condition": "default", "target": "Logic_Split_Node_Financial_Qualification"}
+            {"name": "DoesNotAffirmVehicle_ProceedToFinancialQual", "condition": "any_response", "target": "Logic_Split_Node_Financial_Qualification"}
         ]
     },
     "N201H_Unemployed_AskVehicleQ_V4_FullyTuned": {
@@ -472,7 +474,7 @@ CALL_FLOW = {
         "strict_script": False,
         "transitions": [
             {"name": "AffirmsVehicle_ProceedToFinancialQual", "condition": "affirmative", "target": "Logic_Split_Node_Financial_Qualification"},
-            {"name": "DoesNotAffirmVehicle_ProceedToFinancialQual", "condition": "default", "target": "Logic_Split_Node_Financial_Qualification"}
+            {"name": "DoesNotAffirmVehicle_ProceedToFinancialQual", "condition": "any_response", "target": "Logic_Split_Node_Financial_Qualification"}
         ]
     },
     "Logic_Split_Node_Financial_Qualification": {
@@ -493,7 +495,7 @@ CALL_FLOW = {
         "transitions": [
             {"name": "Has5k", "condition": "affirmative", "target": "N_ConfirmCommitment_FinalCheck_V1_Adaptive"},
             {"name": "No5k", "condition": "negative", "target": "N205C_AskCreditScore_650_V1_FullyTuned"},
-            {"name": "Ambiguous_DefaultToNo5k", "condition": "default", "target": "N205C_AskCreditScore_650_V1_FullyTuned"}
+            {"name": "Ambiguous_DefaultToNo5k", "condition": "any_response", "target": "N205C_AskCreditScore_650_V1_FullyTuned"}
         ]
     },
     "N_AskCapital_15k_V1_Adaptive": {
@@ -504,7 +506,7 @@ CALL_FLOW = {
         "transitions": [
             {"name": "Has15To25k", "condition": "affirmative", "target": "N_ConfirmCommitment_FinalCheck_V1_Adaptive"},
             {"name": "No15To25k", "condition": "negative", "target": "N_AskCapital_5k_V1_Adaptive"},
-            {"name": "Ambiguous_DefaultToNo15To25k", "condition": "default", "target": "N_AskCapital_5k_V1_Adaptive"}
+            {"name": "Ambiguous_DefaultToNo15To25k", "condition": "any_response", "target": "N_AskCapital_5k_V1_Adaptive"}
         ]
     },
     "N_AskCapital_5k_V1_Adaptive": {
@@ -515,7 +517,7 @@ CALL_FLOW = {
         "transitions": [
             {"name": "Has5k", "condition": "affirmative", "target": "N_ConfirmCommitment_FinalCheck_V1_Adaptive"},
             {"name": "No5k", "condition": "negative", "target": "N205C_AskCreditScore_650_V1_FullyTuned"},
-            {"name": "Ambiguous_DefaultToNo5k", "condition": "default", "target": "N205C_AskCreditScore_650_V1_FullyTuned"}
+            {"name": "Ambiguous_DefaultToNo5k", "condition": "any_response", "target": "N205C_AskCreditScore_650_V1_FullyTuned"}
         ]
     },
     "N205C_AskCreditScore_650_V1_FullyTuned": {
@@ -526,7 +528,7 @@ CALL_FLOW = {
         "transitions": [
             {"name": "ScoreOver650", "condition": "score_over_650", "target": "N_ConfirmCommitment_FinalCheck_V1_Adaptive"},
             {"name": "ScoreUnder650", "condition": "score_under_650", "target": "Disqualified"},
-            {"name": "Ambiguous_DefaultToDisqualified", "condition": "default", "target": "Disqualified"}
+            {"name": "Ambiguous_DefaultToDisqualified", "condition": "any_response", "target": "Disqualified"}
         ]
     },
     "Disqualified": {
@@ -535,7 +537,7 @@ CALL_FLOW = {
         "script": "I understand this opportunity might not be the right fit for you at this time. Thank you for your time, and I wish you the best of luck with your endeavors.",
         "strict_script": False,
         "transitions": [
-            {"name": "AnyResponse_EndCall", "condition": "default", "target": "N_EndCall_Final_V2_Decisive"}
+            {"name": "AnyResponse_EndCall", "condition": "any_response", "target": "N_EndCall_Final_V2_Decisive"}
         ]
     },
     "N401_AskWhyNow_Initial_V10_AssertiveFrame": {
@@ -546,7 +548,7 @@ CALL_FLOW = {
         "transitions": [
             {"name": "MotivationProvided", "condition": "motivation_provided", "target": "N402_Compliment_And_AskYouKnowWhy_V5_FullyTuned"},
             {"name": "CallbackRequested", "condition": "callback_requested", "target": "N_Obj_RealBusy_BluntCheck_V3_Adaptive"},
-            {"name": "Ambiguous_DefaultToCompliment", "condition": "default", "target": "N402_Compliment_And_AskYouKnowWhy_V5_FullyTuned"}
+            {"name": "Ambiguous_DefaultToCompliment", "condition": "any_response", "target": "N402_Compliment_And_AskYouKnowWhy_V5_FullyTuned"}
         ]
     },
     "N402_Compliment_And_AskYouKnowWhy_V5_FullyTuned": {
@@ -556,7 +558,7 @@ CALL_FLOW = {
         "strict_script": False,
         "transitions": [
             {"name": "CallbackRequested", "condition": "callback_requested", "target": "N_Obj_RealBusy_BluntCheck_V3_Adaptive"},
-            {"name": "AnyResponse_ProceedToAffirmation", "condition": "default", "target": "N403_IdentityAffirmation_And_ValueFitQuestion_V8_GoalAligned"}
+            {"name": "AnyResponse_ProceedToAffirmation", "condition": "any_response", "target": "N403_IdentityAffirmation_And_ValueFitQuestion_V8_GoalAligned"}
         ]
     },
     "N403_IdentityAffirmation_And_ValueFitQuestion_V8_GoalAligned": {
@@ -566,7 +568,7 @@ CALL_FLOW = {
         "strict_script": False,
         "transitions": [
             {"name": "CallbackRequested", "condition": "callback_requested", "target": "N_Obj_RealBusy_BluntCheck_V3_Adaptive"},
-            {"name": "AnyResponse_ProceedToCommitmentCheck", "condition": "default", "target": "N_ConfirmCommitment_FinalCheck_V1_Adaptive"}
+            {"name": "AnyResponse_ProceedToCommitmentCheck", "condition": "any_response", "target": "N_ConfirmCommitment_FinalCheck_V1_Adaptive"}
         ]
     },
     "N_Obj_RealBusy_BluntCheck_V3_Adaptive": {
@@ -577,7 +579,7 @@ CALL_FLOW = {
         "transitions": [
             {"name": "MeetingUpcoming", "condition": "meeting_coming_up", "target": "N_Obj_RealBusy_AskMeetingTime"},
             {"name": "NotSureWhyListening", "condition": "not_sure_why_listening", "target": "N_Obj_RealBusy_OfferReschedule"},
-            {"name": "Ambiguous_DefaultToReschedule", "condition": "default", "target": "N_Obj_RealBusy_OfferReschedule"}
+            {"name": "Ambiguous_DefaultToReschedule", "condition": "any_response", "target": "N_Obj_RealBusy_OfferReschedule"}
         ]
     },
     "N_Obj_EarlyDismiss_ShareBackgroundAskWhy": {
@@ -586,7 +588,7 @@ CALL_FLOW = {
         "script": "I am a military veteran. I have a software engineering degree, and I know there’s a lot of BS out there. But because I went through the program myself, I can tell you this has given people like me a real shot at an extra 20,000 or more per month. Do you know why?",
         "strict_script": False,
         "transitions": [
-            {"name": "AnyResponse_ProceedToExplanation", "condition": "default", "target": "N_Obj_EarlyDismiss_ExplainReasonAndExplore"}
+            {"name": "AnyResponse_ProceedToExplanation", "condition": "any_response", "target": "N_Obj_EarlyDismiss_ExplainReasonAndExplore"}
         ]
     },
     "N_Obj_EarlyDismiss_DirectValueChallenge": {
@@ -597,7 +599,7 @@ CALL_FLOW = {
         "transitions": [
             {
                 "name": "AnyResponse_ProceedToConnect",
-                "condition": "default",
+                "condition": "any_response",
                 "target": "N_Obj_EarlyDismiss_ConnectToCurrentCall"
             }
         ]
@@ -615,7 +617,7 @@ CALL_FLOW = {
             },
             {
                 "name": "Ambiguous_ProceedToModelIntro",
-                "condition": "default",
+                "condition": "any_response",
                 "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"
             }
         ]
@@ -633,7 +635,7 @@ CALL_FLOW = {
             },
             {
                 "name": "Ambiguous_ProceedToModelIntro",
-                "condition": "default",
+                "condition": "any_response",
                 "target": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"
             }
         ]
@@ -682,7 +684,7 @@ CALL_FLOW = {
         "transitions": [
             {
                 "name": "AnyResponse_ProceedToConfirm",
-                "condition": "default",
+                "condition": "any_response",
                 "target": "N_Obj_RealBusy_ConfirmRescheduleTime"
             }
         ]
@@ -1040,7 +1042,7 @@ CALL_FLOW = {
         "speak_script": ["Okay, perfect. You are all set then, {{customer_name}}. I've just sent that confirmation email over to you. Have a great rest of your day. Goodbye."],
         "strict_script": False,
         "transitions": [
-            {"name": "EndCall", "condition": "any_response", "target": "EndCall"}
+            {"name": "EndCall", "condition": "default", "target": "EndCall"}
         ]
     }
 }

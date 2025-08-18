@@ -26,44 +26,42 @@ class TransitionEvaluator:
         # This will be expanded to a more dynamic pattern-matching system
         self.condition_patterns = {
             # Batch 1
-            "affirmative_name_confirmation": [re.compile(r'\b(yes|yep|yeah|that\'s me|it is|correct|speaking)\b', re.IGNORECASE)],
+            "affirmative_name_confirmation": [re.compile(r'\b(yes|yep|yeah|that\'s me|it is|correct)\b', re.IGNORECASE)],
             "wrong_number_indicated": [re.compile(r'\b(wrong number|wrong person|not him|not her)\b', re.IGNORECASE)],
             "ambiguous_name_confirmation": [re.compile(r'\b(uh-huh|huh|hmm|what|who is this)\b', re.IGNORECASE)],
             "affirmative_intro_and_help_request": [re.compile(r'\b(sure|i guess|okay|what is it|go ahead|yes)\b', re.IGNORECASE)],
             "negative_intro_and_help_request": [re.compile(r'\b(no thanks|not interested|no|i\'m busy)\b', re.IGNORECASE)],
             "objection_company_question": [re.compile(r'\b(who are you|what company|who is this|where you from)\b', re.IGNORECASE)],
             "permission_granted": [re.compile(r'\b(go ahead|sure|okay|yes|what is it|fine)\b', re.IGNORECASE)],
-            "no_recall": [re.compile(r'\b(don\'t recall|don\'t remember|what was that|no)\b', re.IGNORECASE)],
-            "objection_or_callback_request": [re.compile(r'\b(call me back|later|another time)\b', re.IGNORECASE)],
+            "no_recall": [re.compile(r'\b(don\'t recall|don\'t remember|what was that)\b', re.IGNORECASE)],
+            "objection_or_callback_request": [re.compile(r'\b(call me back|later|another time|i\'m busy right now|can you call back)\b', re.IGNORECASE)],
             "not_interested": [re.compile(r'\b(not interested|no thanks|i\'m good|don\'t want|remove me)\b', re.IGNORECASE)],
             "no_time": [re.compile(r'\b(no time|i\'m busy|in a meeting)\b', re.IGNORECASE)],
-            "question": [re.compile(r'\b(what is this about|what\'s this regarding|what do you want|why|how|explain)\b', re.IGNORECASE)],
+            "question": [re.compile(r'\b(what is this about|what\'s this regarding|what do you want|why)\b', re.IGNORECASE)],
             "ambiguous_opener_response": [re.compile(r'\b(uh-huh|huh|hmm|okay)\b', re.IGNORECASE)],
+
             # Batch 2
-            "general_response": [re.compile(r'\b(okay|sure|yes|yeah|alright|fine|sounds good|i see|got it|cool|straightforward|makes sense|i understand|i wouldn\'t|said i wouldn\'t)\b', re.IGNORECASE)],
-            "agrees_to_hear_background": [re.compile(r'\b(yes|sure|okay|fine|go ahead|alright|what is it)\b', re.IGNORECASE)],
-            "declines_to_hear_background": [re.compile(r'\b(no|no thanks|not interested|i\'m good)\b', re.IGNORECASE)],
-            "meeting_coming_up": [re.compile(r'\b(meeting|appointment|call|got to go|have to run)\b', re.IGNORECASE)],
-            "not_sure_why_listening": [re.compile(r'\b(not sure|why should i|what\'s this about|don\'t know)\b', re.IGNORECASE)],
-            # Batch 3
+            "user_asks_question": [re.compile(r'\b(what|how|why|who|when|where|do you|can you|explain|tell me more|business model)\b|\?', re.IGNORECASE)],
+            "general_response": [re.compile(r'\b(okay|ok|got it|i see|right|hmm|uh huh|sure)\b', re.IGNORECASE)],
+            "answered_question_and_ready_for_next_step": [re.compile(r'\b(okay|makes sense|got it|what next|what else|continue|proceed)\b', re.IGNORECASE)],
+            "user_asks_another_question": [re.compile(r'\b(what|how|why|who|when|where|do you|can you|explain|tell me more|another question)\b|\?', re.IGNORECASE)],
+            "positive_response_to_20k_question": [re.compile(r'\b(yes|definitely|i could do that|sounds good|interesting|i would|that would be)\b', re.IGNORECASE)],
+            "ambiguous_response_after_kb": [re.compile(r'\b(okay|ok|got it|i see|right|hmm|uh huh)\b', re.IGNORECASE)],
+            "employed": [re.compile(r'\b(work for|employed|job|w-2|w2|i work)\b', re.IGNORECASE)],
+            "business_owner": [re.compile(r'\b(my own business|business owner|self-employed|entrepreneur|i run)\b', re.IGNORECASE)],
+            "unemployed": [re.compile(r'\b(unemployed|not working|laid off|between jobs)\b', re.IGNORECASE)],
+
+            # Other
             "curiosity_or_interest_expressed": [re.compile(r'\b(explore|curious|tell me more|how does it work|okay|yes|maybe|if it works)\b', re.IGNORECASE)],
             "callback_requested": [re.compile(r'\b(call me back|later|another time)\b', re.IGNORECASE)],
             "shows_interest": [re.compile(r'\b(yes|i am|that sounds interesting|tell me more|possibly|maybe|what\'s it about)\b', re.IGNORECASE)],
             "disinterested": [re.compile(r'\b(no|not interested|i\'m good)\b', re.IGNORECASE)],
-            # Batch 4
-            "still_interested": [re.compile(r'\b(yes|i am|that sounds interesting|tell me more|possibly|maybe|what\'s it about)\b', re.IGNORECASE)],
-            "exploration_agreed": [re.compile(r'\b(yes|sure|okay|fine|go ahead|alright|worth exploring)\b', re.IGNORECASE)],
-            # Batch 5
-            "answered_question_and_ready_for_next_step": [re.compile(r'\b(got it|i see|makes sense|okay|alright)\b', re.IGNORECASE)],
-            "user_asks_another_question": [re.compile(r'\b(what about|how about|and|so|but what)\b', re.IGNORECASE)],
-            "positive_response_to_20k_question": [re.compile(r'\b(yes|yeah|sure|definitely|absolutely|i would|that would be great)\b', re.IGNORECASE)],
-            "ambiguous_response_after_kb": [re.compile(r'\b(hmm|uh|okay|well)\b', re.IGNORECASE)],
-            "employed": [re.compile(r'\b(employed|work for|job)\b', re.IGNORECASE)],
-            "business_owner": [re.compile(r'\b(business|my own|owner|self-employed)\b', re.IGNORECASE)],
-            "unemployed": [re.compile(r'\b(unemployed|not working|in between jobs)\b', re.IGNORECASE)],
-            # General Affirmative/Negative
-            "affirmative": [re.compile(r'\b(yes|yeah|yep|sure|okay|ok|yup|affirmative|correct|right|true|i do|i have)\b', re.IGNORECASE)],
-            "negative": [re.compile(r'\b(no|nope|nah|negative|i don\'t|i do not)\b', re.IGNORECASE)],
+            "agrees_to_hear_background": [re.compile(r'\b(yes|sure|okay|go ahead|fine|what is it)\b', re.IGNORECASE)],
+            "declines_to_hear_background": [re.compile(r'\b(no|not interested|i\'m good|don\'t care|not really)\b', re.IGNORECASE)],
+            "still_interested": [re.compile(r'\b(yes|i am|that sounds interesting|tell me more|possibly|maybe|what is it|i would|i will)\b', re.IGNORECASE)],
+            "exploration_agreed": [re.compile(r'\b(yes|sure|okay|go ahead|fine|worth exploring|i agree)\b', re.IGNORECASE)],
+            "affirmative": [re.compile(r'\b(yes|yep|yeah|sure|i do|i have|i am)\b', re.IGNORECASE)],
+            "negative": [re.compile(r'\b(no|nope|nah|not really|i don\'t|i do not)\b', re.IGNORECASE)],
         }
 
     def evaluate_response(self, user_input: str, transition_conditions: Dict[str, str]) -> Tuple[bool, Optional[str], str]:
@@ -92,20 +90,15 @@ class TransitionEvaluator:
         more robust, keyword-based approach. This will be refactored to be
         stateful and context-aware.
         """
-        # Sanitize the input string from list-like formatting e.g., "['Hello?']"
-        cleaned_input = re.sub(r"[\[\]\'\"]", "", user_input)
-        input_lower = cleaned_input.lower().strip()
+        input_lower = user_input.lower().strip()
         desc_lower = condition_desc.lower()
 
-        # Prioritize exact match, then fall back to substring match
-        if desc_lower in self.condition_patterns:
-            matched_key = desc_lower
-        else:
-            matched_key = None
-            for key in self.condition_patterns.keys():
-                if key in desc_lower:
-                    matched_key = key
-                    break
+        # Find the specific condition key that is a substring of the description
+        matched_key = None
+        for key in self.condition_patterns.keys():
+            if key in desc_lower:
+                matched_key = key
+                break
         
         # If a specific condition is matched, check its patterns
         if matched_key:
