@@ -42,6 +42,7 @@ class TransitionEvaluator:
             "callback_requested": [re.compile(r'\b(call me back|later|another time)\b', re.IGNORECASE)],
             "shows_interest": [re.compile(r'\b(yes|i am|that sounds interesting|tell me more|possibly|maybe|what\'s it about)\b', re.IGNORECASE)],
             "disinterested": [re.compile(r'\b(no|not interested|i\'m good)\b', re.IGNORECASE)],
+            "general_response": [re.compile(r'\b(okay|sure|yes|yeah|alright|fine|sounds good|i see|got it|cool|straightforward|makes sense|i understand|i wouldn\'t|said i wouldn\'t)\b', re.IGNORECASE)],
         }
 
     def evaluate_response(self, user_input: str, transition_conditions: Dict[str, str]) -> Tuple[bool, Optional[str], str]:
@@ -70,7 +71,9 @@ class TransitionEvaluator:
         more robust, keyword-based approach. This will be refactored to be
         stateful and context-aware.
         """
-        input_lower = user_input.lower().strip()
+        # Sanitize the input string from list-like formatting e.g., "['Hello?']"
+        cleaned_input = re.sub(r"[\[\]\'\"]", "", user_input)
+        input_lower = cleaned_input.lower().strip()
         desc_lower = condition_desc.lower()
 
         # Find the specific condition key that is a substring of the description
