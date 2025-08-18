@@ -1,0 +1,1005 @@
+conversation_flow = {
+    # 1. Opening Node: Confirms user identity.
+    "N001A_NameConfirmation_Only": {
+        "purpose": "Confirm prospect's identity.",
+        "transitions": [
+            {
+                "transition_name": "Name_Confirmed",
+                "target_node": "N001B_IntroAndHelpRequest_Only",
+                "trigger_keywords": ["yes", "speaking", "this is he", "this is she", "uh-huh", "okay", "who is this", "what is this regarding"],
+                "example_responses": ["Yes?", "Speaking.", "This is John.", "Who's calling?"],
+                "logic": "User responds without explicitly stating it's a wrong number. This is the default path."
+            },
+            {
+                "transition_name": "Wrong_Number",
+                "target_node": "END_CALL",
+                "trigger_keywords": ["wrong number", "not here", "no John here", "you have the wrong person", "he doesn't live here"],
+                "example_responses": ["Sorry, you have the wrong number.", "There's no one here by that name."],
+                "logic": "User explicitly states that the agent has reached the wrong number."
+            }
+        ]
+    },
+    # 2. Introduction: Asks for a moment of the user's time.
+    "N001B_IntroAndHelpRequest_Only": {
+        "purpose": "Politely ask for a moment of the prospect's time.",
+        "transitions": [
+            {
+                "transition_name": "HelpRequest_Responded",
+                "target_node": "N_Opener_StackingIncomeHook_V3_CreativeTactic",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["Sure, what can I help you with?", "Okay...", "What is this about?"],
+                "logic": "Triggers on any verbal response from the prospect."
+            }
+        ]
+    },
+    # 3. Hook: Delivers the initial value proposition.
+    "N_Opener_StackingIncomeHook_V3_CreativeTactic": {
+        "purpose": "Deliver the value hook and ask for permission to proceed.",
+        "transitions": [
+            {
+                "transition_name": "Permission_Granted",
+                "target_node": "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                "trigger_keywords": ["yes", "sure", "okay", "what is this about"],
+                "example_responses": ["Okay, you have 25 seconds.", "Sure, what is it?"],
+                "logic": "User agrees to hear more or asks for context. Handles piggybacked questions."
+            },
+            {
+                "transition_name": "Callback_Requested",
+                "target_node": "N_Obj_RealBusy_BluntCheck_V3_Adaptive",
+                "trigger_keywords": ["don't have time", "call me back"],
+                "example_responses": ["I don't have time right now.", "Can you call me back later?"],
+                "logic": "User indicates they are busy and requests a callback."
+            },
+            {
+                "transition_name": "Not_Interested",
+                "target_node": "N003B_DeframeInitialObjection_V7_GoalOriented",
+                "trigger_keywords": ["not interested"],
+                "example_responses": ["I'm not interested."],
+                "logic": "User explicitly states they are not interested."
+            },
+            {
+                "transition_name": "No_Recall",
+                "target_node": "N003_NoRecall_PivotAndChallenge_V18_FullyTuned",
+                "trigger_keywords": ["don't recall", "no", "didn't fill out"],
+                "example_responses": ["No, I don't remember that.", "I didn't click on anything."],
+                "logic": "User does not remember filling out the ad."
+            }
+        ]
+    },
+    # 4. Objection Handling: De-frames initial objections.
+    "N003B_DeframeInitialObjection_V7_GoalOriented": {
+        "purpose": "De-frame initial objections to build curiosity.",
+        "transitions": [
+            {
+                "transition_name": "Curiosity_Expressed",
+                "target_node": "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                "trigger_keywords": ["explore", "curious", "tell me more", "how does it work", "okay", "yes", "maybe", "if it works"],
+                "example_responses": ["Okay, tell me more.", "How does it work?"],
+                "logic": "User's response indicates curiosity or interest."
+            },
+            {
+                "transition_name": "Callback_Requested",
+                "target_node": "N_Obj_RealBusy_BluntCheck_V3_Adaptive",
+                "trigger_keywords": ["call back", "have to go", "busy"],
+                "example_responses": ["Can you call me back later?", "I have to go now."],
+                "logic": "User asks to be called back or states they are busy."
+            }
+        ]
+    },
+    # 5. Objection Handling: Pivots from user not recalling the ad.
+    "N003_NoRecall_PivotAndChallenge_V18_FullyTuned": {
+        "purpose": "Pivot from 'no recall' to test interest in the core benefit.",
+        "transitions": [
+            {
+                "transition_name": "BenefitInterest_Yes",
+                "target_node": "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                "trigger_keywords": ["yes", "i am", "sounds interesting", "tell me more", "possibly", "maybe", "what's it about"],
+                "example_responses": ["Yes, I'm focused on that.", "Tell me more."],
+                "logic": "Prospect responds affirmatively or shows clear interest in new income streams."
+            },
+            {
+                "transition_name": "Callback_Requested",
+                "target_node": "N_Obj_RealBusy_BluntCheck_V3_Adaptive",
+                "trigger_keywords": ["call back", "have to go"],
+                "example_responses": ["I have to go, can you call back?"],
+                "logic": "User asks to be called back or says they have to go."
+            }
+        ]
+    },
+    # 6. Re-engagement: Asks to share a personal story.
+    "N_Obj_EarlyDismiss_AskShareBackground_V7": {
+        "purpose": "Request permission to share a personal story to re-engage.",
+        "transitions": [
+            {
+                "transition_name": "AgreedToHearBackground",
+                "target_node": "N_Obj_EarlyDismiss_ShareBackground_DeliverStoryHook_V3_FullyTuned",
+                "trigger_keywords": ["no", "no i wouldn't", "sure", "okay", "go ahead"],
+                "example_responses": ["No, I don't mind.", "Sure, go ahead."],
+                "logic": "User agrees to hear the background story. Handles the semantic inversion of 'no' meaning 'yes'."
+            },
+            {
+                "transition_name": "DeclinedToHearBackground",
+                "target_node": "N_Obj_EarlyDismiss_DirectValueChallenge_V9_EscalationEnabled",
+                "trigger_keywords": ["yes", "i do mind", "not interested"],
+                "example_responses": ["Yes, I mind.", "I'm not interested in your background."],
+                "logic": "Prospect rejects the idea or objects further."
+            }
+        ]
+    },
+    # 7. Re-engagement: Delivers the personal story.
+    "N_Obj_EarlyDismiss_ShareBackground_DeliverStoryHook_V3_FullyTuned": {
+        "purpose": "Share personal story and ask an engaging hook question.",
+        "transitions": [
+            {
+                "transition_name": "RespondedToWhyQuestion",
+                "target_node": "N_Obj_EarlyDismiss_ExplainReasonAndExplore (V1)",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["Why?", "No, I don't know.", "Because of Google?"],
+                "logic": "Triggers on any response to the hook question 'Any idea what makes that possible?'."
+            }
+        ]
+    },
+    # 8. Re-engagement: Presents a direct value challenge.
+    "N_Obj_EarlyDismiss_DirectValueChallenge_V9_EscalationEnabled": {
+        "purpose": "Use a direct value challenge to reignite curiosity.",
+        "transitions": [
+            {
+                "transition_name": "DirectChallengeAccepted",
+                "target_node": "N_Obj_EarlyDismiss_ConnectToCurrentCall_V5_LeadOut",
+                "trigger_keywords": ["yes", "depends", "what is it", "maybe"],
+                "example_responses": ["Yes, I would.", "Depends what it is."],
+                "logic": "Prospect responds positively or with curiosity to the '$20k challenge'."
+            }
+        ]
+    },
+    # 9. Re-engagement: Connects the value challenge to the call.
+    "N_Obj_EarlyDismiss_ConnectToCurrentCall_V5_LeadOut": {
+        "purpose": "Connect the challenge to the purpose of the call.",
+        "transitions": [
+            {
+                "transition_name": "Exploration_Agreed",
+                "target_node": "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                "trigger_keywords": ["yes", "okay", "worth exploring"],
+                "example_responses": ["Yes, that sounds worth exploring."],
+                "logic": "Prospect responds positively or neutrally, indicating interest in exploring."
+            }
+        ]
+    },
+    # 10. Core Pitch: Explains the business model.
+    "N_IntroduceModel_And_AskQuestions_V3_Adaptive": {
+        "purpose": "Provide a high-level summary of the business model.",
+        "transitions": [
+            {
+                "transition_name": "Responded_To_Question",
+                "target_node": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["How does that work?", "What kind of websites?", "Sounds too good to be true."],
+                "logic": "Triggers on any response to the opening question."
+            }
+        ]
+    },
+    # 11. Q&A: Answers questions and frames the $20k potential.
+    "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive": {
+        "purpose": "Answer user questions via KB and pose the '$20k question'.",
+        "transitions": [
+            {
+                "transition_name": "Positive_Response_To_20k_Question",
+                "target_node": "N200_Super_WorkAndIncomeBackground_V3_Adaptive",
+                "trigger_keywords": ["no", "who would be", "that would be great", "of course not", "who would"],
+                "example_responses": ["No, I wouldn't be upset.", "That would be great!"],
+                "logic": "The user responds positively to the '$20k a month' framing question."
+            }
+        ]
+    },
+    # 12. Qualification: Determines employment status.
+    "N200_Super_WorkAndIncomeBackground_V3_Adaptive": {
+        "purpose": "Determine user's employment status (Business Owner, Employed, or Unemployed).",
+        "transitions": [
+            {
+                "transition_name": "Is_BusinessOwner",
+                "target_node": "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned",
+                "trigger_keywords": ["own a business", "my company", "entrepreneur", "run my own", "self-employed"],
+                "example_responses": ["I run my own business.", "I'm an entrepreneur."],
+                "logic": "PRIORITY 1: User indicates they are a business owner."
+            },
+            {
+                "transition_name": "Is_Employed",
+                "target_node": "N201A_Employed_AskYearlyIncome_V8_Adaptive",
+                "trigger_keywords": ["have a job", "i work at", "i'm a", "get a paycheck", "working for someone"],
+                "example_responses": ["I have a job.", "I'm a software engineer."],
+                "logic": "PRIORITY 2: User indicates they are currently employed by someone else."
+            },
+            {
+                "transition_name": "Is_Unemployed",
+                "target_node": "N201E_Unemployed_EmpathyAskPastYearlyIncome_V5_Adaptive",
+                "trigger_keywords": ["unemployed", "laid off", "lost my job", "between jobs", "not working", "looking for work"],
+                "example_responses": ["I was laid off recently.", "I'm currently unemployed."],
+                "logic": "PRIORITY 3: User indicates they are not currently working."
+            }
+        ]
+    },
+    # 13. Qualification Path (Employed): Asks for yearly income.
+    "N201A_Employed_AskYearlyIncome_V8_Adaptive": {
+        "purpose": "Ask employed user for their yearly income.",
+        "transitions": [
+            {
+                "transition_name": "Employed_ReceivedYearlyIncome",
+                "target_node": "N201B_Employed_AskSideHustle_V4_FullyTuned",
+                "trigger_keywords": ["*monetary_value*"],
+                "example_responses": ["About 80k a year.", "I make six figures."],
+                "logic": "Prospect provides their yearly income or a range."
+            }
+        ]
+    },
+    # 14. Qualification Path (Unemployed): Asks for past income.
+    "N201E_Unemployed_EmpathyAskPastYearlyIncome_V5_Adaptive": {
+        "purpose": "Ask unemployed user for their past yearly income.",
+        "transitions": [
+            {
+                "transition_name": "Unemployed_ReceivedPastYearlyIncome",
+                "target_node": "N201F_Unemployed_AskSideHustle_V4_FullyTuned",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["I was making around 70,000.", "I don't want to talk about it."],
+                "logic": "Triggers on any response, including refusal, which is handled by the next node's entry."
+            }
+        ]
+    },
+    # 15. Qualification Path (Employed): Asks about side hustles.
+    "N201B_Employed_AskSideHustle_V4_FullyTuned": {
+        "purpose": "Ask employed user about side hustles.",
+        "transitions": [
+            {
+                "transition_name": "Employed_SideHustleYes",
+                "target_node": "N201C_Employed_AskSideHustleAmount_V3_FullyTuned",
+                "trigger_keywords": ["yes", "i do", "a little"],
+                "example_responses": ["Yes, I have a side hustle."],
+                "logic": "Prospect answers 'Yes' or indicates they have a side hustle."
+            },
+            {
+                "transition_name": "Employed_SideHustleNo",
+                "target_node": "N201D_Employed_AskVehicleQ_V5_Adaptive",
+                "trigger_keywords": ["no", "not really", "i don't"],
+                "example_responses": ["No, not right now."],
+                "logic": "Prospect answers 'No' or indicates no side hustle."
+            }
+        ]
+    },
+    # 16. Qualification Path (Business Owner): Asks for monthly revenue.
+    "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned": {
+        "purpose": "Ask business owner for monthly revenue.",
+        "transitions": [
+            {
+                "transition_name": "ReceivedCurrentRevenue",
+                "target_node": "N202B_AskHighestRevenueMonth_V4_FullyTuned",
+                "trigger_keywords": ["*monetary_value*"],
+                "example_responses": ["We do about 15k a month.", "Around twenty thousand."],
+                "logic": "Prospect provides current monthly revenue or a ballpark."
+            }
+        ]
+    },
+    # 17. Qualification Path (Unemployed): Asks about side hustles.
+    "N201F_Unemployed_AskSideHustle_V4_FullyTuned": {
+        "purpose": "Ask unemployed user about side hustles.",
+        "transitions": [
+            {
+                "transition_name": "Unemployed_SideHustleYes",
+                "target_node": "N201G_Unemployed_AskSideHustleAmount (V1_FullyTuned)",
+                "trigger_keywords": ["yes", "i did", "sometimes"],
+                "example_responses": ["Yeah, I do some freelance work."],
+                "logic": "Prospect answers 'Yes' or indicates a side hustle."
+            },
+            {
+                "transition_name": "Unemployed_SideHustleNo",
+                "target_node": "N201H_Unemployed_AskVehicleQ_V4_FullyTuned",
+                "trigger_keywords": ["no", "not anymore"],
+                "example_responses": ["No, nothing like that."],
+                "logic": "Prospect answers 'No' or indicates no side hustle."
+            }
+        ]
+    },
+    # 18. Qualification Path (Employed): Asks for side hustle income.
+    "N201C_Employed_AskSideHustleAmount_V3_FullyTuned": {
+        "purpose": "Ask employed user for side hustle income amount.",
+        "transitions": [
+            {
+                "transition_name": "Employed_ReceivedSideHustleAmount",
+                "target_node": "N201D_Employed_AskVehicleQ_V5_Adaptive",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["A few hundred bucks a month.", "It's not much."],
+                "logic": "Triggers on any response from the prospect."
+            }
+        ]
+    },
+    # 19. Qualification Path (Business Owner): Asks for highest revenue month.
+    "N202B_AskHighestRevenueMonth_V4_FullyTuned": {
+        "purpose": "Ask business owner for their highest revenue month.",
+        "transitions": [
+            {
+                "transition_name": "ReceivedHighestRevenue",
+                "target_node": "N202C_AskVehicleQuestion_BusinessOwner_V4_Adaptive",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["We hit 50k last December.", "I'm not sure."],
+                "logic": "Triggers on any response to the highest monthly revenue question."
+            }
+        ]
+    },
+    # 20. Qualification Path (Unemployed): Asks for side hustle income.
+    "N201G_Unemployed_AskSideHustleAmount (V1_FullyTuned)": {
+        "purpose": "Ask unemployed user for side hustle income amount.",
+        "transitions": [
+            {
+                "transition_name": "Unemployed_ReceivedSideHustleAmount",
+                "target_node": "N201H_Unemployed_AskVehicleQ_V4_FullyTuned",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["Maybe five hundred a month.", "It varies."],
+                "logic": "Triggers on any response from the prospect."
+            }
+        ]
+    },
+    # 21. Vehicle Question (Employed): Gauges belief in the model.
+    "N201D_Employed_AskVehicleQ_V5_Adaptive": {
+        "purpose": "Ask the 'Vehicle Question' to employed users.",
+        "transitions": [
+            {
+                "transition_name": "VehicleQuestion_Affirmed",
+                "target_node": "Logic_Split_Node_Financial_Qualification",
+                "trigger_keywords": ["yes", "yeah", "definitely", "i can see that", "makes sense", "i think so", "sure", "absolutely", "i believe i could", "sounds possible"],
+                "example_responses": ["Yeah, I think I could do that.", "That sounds possible with the right system."],
+                "logic": "Prospect affirms they see the potential and does not express strong doubt."
+            }
+        ]
+    },
+    # 22. Vehicle Question (Business Owner): Gauges belief in the model.
+    "N202C_AskVehicleQuestion_BusinessOwner_V4_Adaptive": {
+        "purpose": "Ask the 'Vehicle Question' to business owners.",
+        "transitions": [
+            {
+                "transition_name": "VehicleQuestion_Affirmed",
+                "target_node": "Logic_Split_Node_Financial_Qualification",
+                "trigger_keywords": ["yes", "yeah", "definitely", "i can see that", "makes sense", "i think so", "sure", "absolutely", "i believe i could", "sounds possible"],
+                "example_responses": ["Yes, that makes sense.", "I believe so."],
+                "logic": "Prospect affirms they see the potential and does not express strong doubt."
+            }
+        ]
+    },
+    # 23. Vehicle Question (Unemployed): Gauges belief in the model.
+    "N201H_Unemployed_AskVehicleQ_V4_FullyTuned": {
+        "purpose": "Ask the 'Vehicle Question' to unemployed users.",
+        "transitions": [
+            {
+                "transition_name": "VehicleQuestion_Affirmed",
+                "target_node": "Logic_Split_Node_Financial_Qualification",
+                "trigger_keywords": ["yes", "yeah", "definitely", "i can see that", "makes sense", "i think so", "sure", "absolutely", "i believe i could", "sounds possible"],
+                "example_responses": ["Yes, I could definitely do that.", "I hope so."],
+                "logic": "Prospect affirms they see the potential or shows hope."
+            }
+        ]
+    },
+    # 24. Logical Branch: Routes based on income level.
+    "Logic_Split_Node_Financial_Qualification": {
+        "purpose": "Logical branch to route users based on income level.",
+        "transitions": [
+            {
+                "transition_name": "High_Income",
+                "target_node": "N_AskCapital_15k_V1_Adaptive",
+                "trigger_keywords": [],
+                "example_responses": [],
+                "logic": "User's stated income is over $8k/month or $100k/year."
+            },
+            {
+                "transition_name": "Standard_Income",
+                "target_node": "N_AskCapital_5k_Direct_V1_Adaptive",
+                "trigger_keywords": [],
+                "example_responses": [],
+                "logic": "User's stated income is less than $8k/month or $100k/year."
+            }
+        ]
+    },
+    # 25. Financial Qualification: Asks high-income users about $15k capital.
+    "N_AskCapital_15k_V1_Adaptive": {
+        "purpose": "Ask high-income users about $15k+ capital.",
+        "transitions": [
+            {
+                "transition_name": "Has_Capital",
+                "target_node": "N401_AskWhyNow_Initial_V10_AssertiveFrame",
+                "trigger_keywords": ["yes", "i do"],
+                "example_responses": ["Yes, I have that."],
+                "logic": "User indicates they have the capital."
+            },
+            {
+                "transition_name": "No_Capital",
+                "target_node": "N_AskCapital_5k_V1_Adaptive",
+                "trigger_keywords": ["no", "not that much"],
+                "example_responses": ["No, not that much right now."],
+                "logic": "User indicates they do not have the capital."
+            }
+        ]
+    },
+    # 26. Financial Qualification: Asks standard-income users about $5k capital.
+    "N_AskCapital_5k_Direct_V1_Adaptive": {
+        "purpose": "Ask standard-income users about $5k+ capital.",
+        "transitions": [
+            {
+                "transition_name": "Has_Capital",
+                "target_node": "N401_AskWhyNow_Initial_V10_AssertiveFrame",
+                "trigger_keywords": ["yes", "i do", "i can do that"],
+                "example_responses": ["Yes, I can do that."],
+                "logic": "User indicates they have the capital."
+            },
+            {
+                "transition_name": "No_Capital",
+                "target_node": "N205C_AskCreditScore_650_V1_FullyTuned",
+                "trigger_keywords": ["no", "i can't do that"],
+                "example_responses": ["No, I don't have that."],
+                "logic": "User indicates they do not have the capital."
+            }
+        ]
+    },
+    # 27. Financial Qualification: Asks users who failed $15k check about $5k.
+    "N_AskCapital_5k_V1_Adaptive": {
+        "purpose": "Ask users who failed the $15k check about $5k+ capital.",
+        "transitions": [
+            {
+                "transition_name": "Has_Capital",
+                "target_node": "N401_AskWhyNow_Initial_V10_AssertiveFrame",
+                "trigger_keywords": ["yes", "i can do that"],
+                "example_responses": ["Yes, that would be more in line."],
+                "logic": "User indicates they have the capital."
+            },
+            {
+                "transition_name": "No_Capital",
+                "target_node": "N205C_AskCreditScore_650_V1_FullyTuned",
+                "trigger_keywords": ["no", "i can't do that"],
+                "example_responses": ["No, not even that."],
+                "logic": "User indicates they do not have the capital."
+            }
+        ]
+    },
+    # 28. Financial Qualification: Asks about credit score as a fallback.
+    "N205C_AskCreditScore_650_V1_FullyTuned": {
+        "purpose": "Ask about credit score as a final qualification method.",
+        "transitions": [
+            {
+                "transition_name": "Score_Is_Qualified",
+                "target_node": "N401_AskWhyNow_Initial_V10_AssertiveFrame",
+                "trigger_keywords": ["yes", "it's over 650", "700"],
+                "example_responses": ["Yes, it's pretty good.", "It's 720."],
+                "logic": "User indicates their credit score is over 650."
+            },
+            {
+                "transition_name": "Score_Not_Qualified",
+                "target_node": "END_CALL",
+                "trigger_keywords": ["no", "it's under", "600"],
+                "example_responses": ["No, it's not that high.", "It's around 600."],
+                "logic": "User indicates their credit score is under 650."
+            }
+        ]
+    },
+    # 29. Motivation: Asks the 'Why now?' question.
+    "N401_AskWhyNow_Initial_V10_AssertiveFrame": {
+        "purpose": "Ask the 'Why now?' question to uncover motivation.",
+        "transitions": [
+            {
+                "transition_name": "Motivation_Provided",
+                "target_node": "N402_Compliment_And_AskYouKnowWhy_V5_FullyTuned",
+                "trigger_keywords": ["freedom", "tired of my job", "need more income", "for my family"],
+                "example_responses": ["I'm just tired of the 9-to-5 and need more freedom.", "I'm looking for a real change."],
+                "logic": "User's response indicates a clear motivation for change."
+            },
+            {
+                "transition_name": "Callback_Requested",
+                "target_node": "N_Obj_RealBusy_BluntCheck_V3_Adaptive",
+                "trigger_keywords": ["have to go", "busy"],
+                "example_responses": ["I have to go now."],
+                "logic": "User states they need to end the call."
+            }
+        ]
+    },
+    # 30. Motivation: Compliments user and builds intrigue.
+    "N402_Compliment_And_AskYouKnowWhy_V5_FullyTuned": {
+        "purpose": "Compliment the user and ask the 'You know why?' hook.",
+        "transitions": [
+            {
+                "transition_name": "Responded_To_Hook",
+                "target_node": "N403_IdentityAffirmation_And_ValueFitQuestion_V8_GoalAligned",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["Why?", "No, why?", "Okay..."],
+                "logic": "Triggers on any response from the user."
+            },
+            {
+                "transition_name": "Callback_Requested",
+                "target_node": "N_Obj_RealBusy_BluntCheck_V3_Adaptive",
+                "trigger_keywords": ["have to go"],
+                "example_responses": ["I've got to run."],
+                "logic": "User states they need to end the call."
+            }
+        ]
+    },
+    # 31. Motivation: Affirms user's identity and confirms value fit.
+    "N403_IdentityAffirmation_And_ValueFitQuestion_V8_GoalAligned": {
+        "purpose": "Affirm the user's identity and confirm value fit.",
+        "transitions": [
+            {
+                "transition_name": "Value_Confirmed",
+                "target_node": "N500A_ProposeDeeperDive_V5_Adaptive",
+                "trigger_keywords": ["yes", "it does", "sounds like it"],
+                "example_responses": ["Yes, this sounds like what I'm looking for."],
+                "logic": "User responds affirmatively, confirming the concept fits what they are looking for."
+            },
+            {
+                "transition_name": "Callback_Requested",
+                "target_node": "N_Obj_RealBusy_BluntCheck_V3_Adaptive",
+                "trigger_keywords": ["have to go"],
+                "example_responses": ["I have to go."],
+                "logic": "User states they need to end the call."
+            }
+        ]
+    },
+    # 32. Objection Handling (Busy): Diagnoses the 'busy' objection.
+    "N_Obj_RealBusy_BluntCheck_V3_Adaptive": {
+        "purpose": "Assertively diagnose whether 'I'm busy' is a real time constraint or a dismissal.",
+        "transitions": [
+            {
+                "transition_name": "Confirmed_Meeting",
+                "target_node": "N_Obj_RealBusy_AskMeetingTime (V1)",
+                "trigger_keywords": ["meeting", "i really do"],
+                "example_responses": ["Yes, I have a meeting in 10 minutes."],
+                "logic": "Prospect confirms they have a genuine, immediate time constraint."
+            },
+            {
+                "transition_name": "Value_Objection",
+                "target_node": "PREVIOUS_NODE", # This would loop back to re-engage
+                "trigger_keywords": ["not sure", "don't see the value"],
+                "example_responses": ["I'm just not sure this is for me."],
+                "logic": "Prospect confirms the issue is a lack of perceived value, not time."
+            }
+        ]
+    },
+    # 33. Legacy Re-engagement: Asks 'why' after sharing story.
+    "N_Obj_EarlyDismiss_ShareBackgroundAskWhy (V1)": {
+        "purpose": "Legacy version of sharing background story.",
+        "transitions": [
+            {
+                "transition_name": "RespondedToWhyQuestion",
+                "target_node": "N_Obj_EarlyDismiss_ExplainReasonAndExplore (V1)",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["Why?", "No."],
+                "logic": "Any response triggers the next node in the legacy sequence."
+            }
+        ]
+    },
+    # 34. Legacy Re-engagement: Direct value challenge.
+    "N_Obj_EarlyDismiss_DirectValueChallenge (V1)": {
+        "purpose": "Legacy version of the direct value challenge.",
+        "transitions": [
+            {
+                "transition_name": "DirectChallengeAccepted",
+                "target_node": "N_Obj_EarlyDismiss_ConnectToCurrentCall (V1)",
+                "trigger_keywords": ["yes", "depends", "what is it"],
+                "example_responses": ["Yes.", "Depends."],
+                "logic": "Prospect responds positively or with curiosity."
+            }
+        ]
+    },
+    # 35. Legacy Re-engagement: Explains value proposition.
+    "N_Obj_EarlyDismiss_ExplainReasonAndExplore (V1)": {
+        "purpose": "Legacy version of explaining the value proposition.",
+        "transitions": [
+            {
+                "transition_name": "EarlyDismiss_PSPF1_Success",
+                "target_node": "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                "trigger_keywords": ["yes", "okay", "sounds interesting"],
+                "example_responses": ["Okay, that sounds interesting."],
+                "logic": "Prospect responds positively, indicating interest."
+            },
+            {
+                "transition_name": "EarlyDismiss_PSPF1_StillResistant",
+                "target_node": "N_Obj_EarlyDismiss_DirectValueChallenge (V1)",
+                "trigger_keywords": ["no", "not really"],
+                "example_responses": ["I'm still not interested."],
+                "logic": "Prospect remains dismissive or objects further."
+            }
+        ]
+    },
+    # 36. Legacy Re-engagement: Connects challenge to the call.
+    "N_Obj_EarlyDismiss_ConnectToCurrentCall (V1)": {
+        "purpose": "Legacy version of connecting the challenge to the call.",
+        "transitions": [
+            {
+                "transition_name": "EarlyDismiss_PSPF2_Success",
+                "target_node": "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                "trigger_keywords": ["yes", "okay"],
+                "example_responses": ["Okay, let's talk."],
+                "logic": "Prospect responds positively, indicating interest."
+            },
+            {
+                "transition_name": "Insists_On_Leaving",
+                "target_node": "N_Obj_RealBusy_BluntCheck_V3_Adaptive",
+                "trigger_keywords": ["have to go", "busy"],
+                "example_responses": ["I really have to go."],
+                "logic": "Prospect insists they are busy."
+            }
+        ]
+    },
+    # 37. Legacy Reschedule: Asks for meeting time.
+    "N_Obj_RealBusy_AskMeetingTime (V1)": {
+        "purpose": "Legacy version for handling 'real busy' objections.",
+        "transitions": [
+            {
+                "transition_name": "MeetingTimeGiven",
+                "target_node": "N_Obj_RealBusy_StateRemainingTimeAndWrapUp (V1)",
+                "trigger_keywords": ["in 10 minutes", "at 3"],
+                "example_responses": ["My meeting is in 5 minutes."],
+                "logic": "Prospect provides a timeframe for their meeting."
+            },
+            {
+                "transition_name": "MeetingTimeVague",
+                "target_node": "N_Obj_RealBusy_OfferReschedule (V1)",
+                "trigger_keywords": ["soon", "in a bit"],
+                "example_responses": ["It's coming up soon."],
+                "logic": "Prospect is vague about the meeting time."
+            }
+        ]
+    },
+    # 38. Legacy Reschedule: States remaining time.
+    "N_Obj_RealBusy_StateRemainingTimeAndWrapUp (V1)": {
+        "purpose": "Legacy version for stating remaining time.",
+        "transitions": [
+            {
+                "transition_name": "WrapUpDelivered",
+                "target_node": "PREVIOUS_NODE", # Or next logical step
+                "trigger_keywords": [],
+                "example_responses": [],
+                "logic": "Agent delivers the wrap-up and attempts to continue the conversation."
+            }
+        ]
+    },
+    # 39. Legacy Reschedule: Offers to reschedule.
+    "N_Obj_RealBusy_OfferReschedule (V1)": {
+        "purpose": "Legacy version for offering to reschedule.",
+        "transitions": [
+            {
+                "transition_name": "RescheduleTimeOffered",
+                "target_node": "N_Obj_RealBusy_ConfirmRescheduleTime (V1)",
+                "trigger_keywords": ["tomorrow", "next week"],
+                "example_responses": ["How about tomorrow afternoon?"],
+                "logic": "Prospect offers a time/day to reschedule."
+            }
+        ]
+    },
+    # 40. Legacy Reschedule: Confirms reschedule time.
+    "N_Obj_RealBusy_ConfirmRescheduleTime (V1)": {
+        "purpose": "Legacy version for confirming reschedule time.",
+        "transitions": [
+            {
+                "transition_name": "RescheduleConfirmed100Percent",
+                "target_node": "N_Obj_RealBusy_StateCallbackAndTeaseGuarantees (V1)",
+                "trigger_keywords": ["yes", "i will be"],
+                "example_responses": ["Yes, I'll be 100% available then."],
+                "logic": "Prospect confirms 100% availability."
+            }
+        ]
+    },
+    # 41. Legacy Reschedule: Teases guarantees before callback.
+    "N_Obj_RealBusy_StateCallbackAndTeaseGuarantees (V1)": {
+        "purpose": "Legacy version for teasing guarantees before callback.",
+        "transitions": [
+            {
+                "transition_name": "RescheduleSet_EndCall",
+                "target_node": "END_CALL",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["Okay, sounds good."],
+                "logic": "Agent has delivered the full utterance, ending the call."
+            }
+        ]
+    },
+    # 42. Scheduling: Proposes the deeper dive call.
+    "N500A_ProposeDeeperDive_V5_Adaptive": {
+        "purpose": "Propose scheduling the deeper dive call.",
+        "transitions": [
+            {
+                "transition_name": "Agreed_To_Schedule",
+                "target_node": "N500B_AskTimezone_V2_FullyTuned",
+                "trigger_keywords": ["yes", "sure", "okay", "yep", "sounds good"],
+                "example_responses": ["Sounds good.", "Okay, let's do it."],
+                "logic": "Prospect agrees to set up another call."
+            }
+        ]
+    },
+    # 43. Scheduling: Asks for user's timezone.
+    "N500B_AskTimezone_V2_FullyTuned": {
+        "purpose": "Ask for the user's timezone.",
+        "transitions": [
+            {
+                "transition_name": "Timezone_Provided",
+                "target_node": "N_AskForCallbackRange_V1_Adaptive",
+                "trigger_keywords": ["pacific", "eastern", "mountain", "central", "PST", "EST", "CST", "MST", "california", "new york"],
+                "example_responses": ["I'm on Eastern time.", "Pacific.", "I'm in Denver."],
+                "logic": "Prospect provides their timezone or location."
+            }
+        ]
+    },
+    # 44. Scheduling: Asks for a callback time range.
+    "N_AskForCallbackRange_V1_Adaptive": {
+        "purpose": "Ask for a good time range for a callback.",
+        "transitions": [
+            {
+                "transition_name": "Range_Provided",
+                "target_node": "N_Scheduling_AskTime_V2_SmartAmbiguity",
+                "trigger_keywords": ["afternoon", "morning", "between 2 and 4", "after 5"],
+                "example_responses": ["Usually afternoons are good.", "Anytime after 3 PM."],
+                "logic": "User provides a time range for their availability."
+            }
+        ]
+    },
+    # 45. Scheduling: Asks for a specific time.
+    "N_Scheduling_AskTime_V2_SmartAmbiguity": {
+        "purpose": "Ask for a specific time and handle AM/PM ambiguity.",
+        "transitions": [
+            {
+                "transition_name": "Time_Provided",
+                "target_node": "N_ConfirmVideoCallEnvironment_V1_Adaptive",
+                "trigger_keywords": ["*time*"],
+                "example_responses": ["How about 3 PM?", "Let's do 10 AM tomorrow."],
+                "logic": "User gives a specific date and time."
+            }
+        ]
+    },
+    # 46. Scheduling: Confirms user can join a Zoom call.
+    "N_ConfirmVideoCallEnvironment_V1_Adaptive": {
+        "purpose": "Confirm user can join a Zoom call from a computer.",
+        "transitions": [
+            {
+                "transition_name": "Environment_Confirmed",
+                "target_node": "N_Scheduling_RescheduleAndHandle_V5_FullyTuned",
+                "trigger_keywords": ["yes", "that works", "i can do that"],
+                "example_responses": ["Yes, I can be at my computer then.", "That works for me."],
+                "logic": "User confirms they can join from a computer. This triggers the booking attempt."
+            }
+        ]
+    },
+    # 47. Scheduling: Handles booking and rescheduling.
+    "N_Scheduling_RescheduleAndHandle_V5_FullyTuned": {
+        "purpose": "Handle webhook response for booking and offer alternatives if needed.",
+        "transitions": [
+            {
+                "transition_name": "Time_Booked_Successfully",
+                "target_node": "N206_AskAboutPartners_IfFinanciallyQualified",
+                "trigger_keywords": [],
+                "example_responses": [],
+                "logic": "The time is available and was booked via webhook."
+            },
+            {
+                "transition_name": "Time_Unavailable",
+                "target_node": "SELF",
+                "trigger_keywords": [],
+                "example_responses": [],
+                "logic": "The time was not available, agent offers other options."
+            },
+            {
+                "transition_name": "User_Picks_New_Time",
+                "target_node": "SELF",
+                "trigger_keywords": ["how about", "is X available"],
+                "example_responses": ["What about 4 PM instead?"],
+                "logic": "User suggests another time to check."
+            },
+            {
+                "transition_name": "Hostile_Or_End_Call",
+                "target_node": "END_CALL",
+                "trigger_keywords": [],
+                "example_responses": [],
+                "logic": "Caller's response is hostile or they terminate the call."
+            }
+        ]
+    },
+    # 48. Partner Qualification: Asks about decision-making partners.
+    "N206_AskAboutPartners_IfFinanciallyQualified": {
+        "purpose": "Ask if any partners are involved in the decision.",
+        "transitions": [
+            {
+                "transition_name": "Partner_Exists",
+                "target_node": "N018_ConfirmPartnerAvailability",
+                "trigger_keywords": ["yes", "my wife", "my husband", "my business partner"],
+                "example_responses": ["Yes, my wife would be involved.", "I have a business partner."],
+                "logic": "User confirms a partner is involved."
+            },
+            {
+                "transition_name": "No_Partner",
+                "target_node": "N_ConfirmCommitment_FinalCheck_V1_Adaptive",
+                "trigger_keywords": ["no", "just me"],
+                "example_responses": ["No, it's just me."],
+                "logic": "User confirms they are the sole decision-maker."
+            }
+        ]
+    },
+    # 49. Partner Qualification: Confirms partner availability.
+    "N018_ConfirmPartnerAvailability": {
+        "purpose": "Confirm the partner is available for the scheduled time.",
+        "transitions": [
+            {
+                "transition_name": "Partner_Available",
+                "target_node": "N_ConfirmCommitment_FinalCheck_V1_Adaptive",
+                "trigger_keywords": ["yes", "she'll be there", "he's free", "works for us", "i'm the decision maker"],
+                "example_responses": ["Yes, we can both be there.", "That works for us."],
+                "logic": "Prospect confirms partner can attend or that they are the ultimate decision maker."
+            },
+            {
+                "transition_name": "Partner_NotAvailable",
+                "target_node": "N_Scheduling_RescheduleAndHandle_V5_FullyTuned",
+                "trigger_keywords": ["no", "she can't", "he's busy"],
+                "example_responses": ["No, she can't make that time.", "That won't work for my partner."],
+                "logic": "Prospect indicates the chosen time does not work for the partner."
+            },
+            {
+                "transition_name": "Partner_ScheduleUncertain",
+                "target_node": "N017D_SuggestPartnerCheck_ScheduleFollowUpCall",
+                "trigger_keywords": ["i don't know", "i'll have to check", "i'm not sure"],
+                "example_responses": ["I don't know her schedule.", "I'll have to check with him."],
+                "logic": "Prospect states they don't know the other person's schedule."
+            }
+        ]
+    },
+    # 50. Partner Qualification: Schedules a follow-up to confirm with partner.
+    "N017D_SuggestPartnerCheck_ScheduleFollowUpCall": {
+        "purpose": "Arrange a follow-up call to confirm partner availability.",
+        "transitions": [
+            {
+                "transition_name": "FollowUpPlan_Agreed",
+                "target_node": "END_CALL",
+                "trigger_keywords": ["yes", "sounds fair", "okay", "sounds good", "that works"],
+                "example_responses": ["Yes, that sounds fair.", "Okay, that works."],
+                "logic": "Prospect agrees to the plan to check with partner and receive a callback."
+            }
+        ]
+    },
+    # 51. Final Confirmation: Gets verbal commitment to attend.
+    "N_ConfirmCommitment_FinalCheck_V1_Adaptive": {
+        "purpose": "Get final verbal commitment to attend the appointment.",
+        "transitions": [
+            {
+                "transition_name": "Commitment_Confirmed",
+                "target_node": "N_CheckForTextReceipt_V1_Adaptive",
+                "trigger_keywords": ["no", "i'll be there", "no reason"],
+                "example_responses": ["No, there's no reason.", "I'll be there."],
+                "logic": "User confirms their commitment to the appointment time."
+            }
+        ]
+    },
+    # 52. Closing Sequence: Confirms receipt of confirmation text.
+    "N_CheckForTextReceipt_V1_Adaptive": {
+        "purpose": "Confirm the user received the confirmation text.",
+        "transitions": [
+            {
+                "transition_name": "Text_Received",
+                "target_node": "N_ConfirmAndRequestReply_V4_PatientListener",
+                "trigger_keywords": ["yes", "i got it", "it came through"],
+                "example_responses": ["Yes, I just got it."],
+                "logic": "User confirms they have received the text message."
+            }
+        ]
+    },
+    # 53. Closing Sequence: Instructs user to reply to the text.
+    "N_ConfirmAndRequestReply_V4_PatientListener": {
+        "purpose": "Instruct user to reply 'Confirmed, I'll see you there'.",
+        "transitions": [
+            {
+                "transition_name": "Reply_Sent",
+                "target_node": "N_Video_Assign_GentleIntro_V3_FullyTuned",
+                "trigger_keywords": ["done", "sent", "replied", "i did it", "okay"],
+                "example_responses": ["Okay, I just sent it.", "Done."],
+                "logic": "User confirms they have replied to the text message."
+            }
+        ]
+    },
+    # 54. Closing Sequence: Introduces the pre-call video.
+    "N_Video_Assign_GentleIntro_V3_FullyTuned": {
+        "purpose": "Introduce the pre-call video and get agreement to watch.",
+        "transitions": [
+            {
+                "transition_name": "Video_Accepted",
+                "target_node": "N_Video_ReinforceValue_FeeContext_V3_FullyTuned",
+                "trigger_keywords": ["yes", "sure", "okay", "makes sense"],
+                "example_responses": ["Sure, I can do that.", "Makes sense."],
+                "logic": "Prospect agrees to watch the video."
+            }
+        ]
+    },
+    # 55. Closing Sequence: Reinforces video value with waived fee.
+    "N_Video_ReinforceValue_FeeContext_V3_FullyTuned": {
+        "purpose": "Reinforce video's importance by mentioning the waived fee.",
+        "transitions": [
+            {
+                "transition_name": "Value_Acknowledged",
+                "target_node": "N_Video_RelateSocialProof_Part2_LogicHook_V3_Checkpoint",
+                "trigger_keywords": ["yes", "okay", "sounds good", "all good"],
+                "example_responses": ["Okay, sounds good.", "All good on that front."],
+                "logic": "Prospect acknowledges the information about the waived fee."
+            }
+        ]
+    },
+    # 56. Closing Sequence: Connects video to social proof.
+    "N_Video_RelateSocialProof_Part2_LogicHook_V3_Checkpoint": {
+        "purpose": "Connect the video to the high-scale potential.",
+        "transitions": [
+            {
+                "transition_name": "Logic_Acknowledged",
+                "target_node": "N_Video_AssignAndCommit_V1_FullyTuned",
+                "trigger_keywords": ["yeah", "i get it", "okay", "you know"],
+                "example_responses": ["Yeah, I get it.", "Okay."],
+                "logic": "Prospect gives an affirmative acknowledgment."
+            }
+        ]
+    },
+    # 57. Closing Sequence: Secures commitment to watch the video.
+    "N_Video_AssignAndCommit_V1_FullyTuned": {
+        "purpose": "Secure a direct commitment to watch the video.",
+        "transitions": [
+            {
+                "transition_name": "Commitment_Made",
+                "target_node": "N_Video_ConfirmAndReply_V1_Adaptive",
+                "trigger_keywords": ["yes", "i can", "that works"],
+                "example_responses": ["Yes, I can watch it now.", "That works perfectly."],
+                "logic": "The user agrees to watch the video."
+            }
+        ]
+    },
+    # 58. Closing Sequence: Asks for reply to the video link text.
+    "N_Video_ConfirmAndReply_V1_Adaptive": {
+        "purpose": "Ask user to reply 'Got it' to the video link text.",
+        "transitions": [
+            {
+                "transition_name": "Replied_To_Text",
+                "target_node": "N_EndCall_Final_V2_Decisive",
+                "trigger_keywords": ["i replied", "sent", "got it", "done"],
+                "example_responses": ["I just replied.", "Sent."],
+                "logic": "User confirms they have replied to the text with the video link."
+            }
+        ]
+    },
+    # 59. Closing Sequence: Delivers final statement and ends the call.
+    "N_EndCall_Final_V2_Decisive": {
+        "purpose": "Deliver the final closing statement and end the call.",
+        "transitions": [
+            {
+                "transition_name": "End_Call",
+                "target_node": "END_CALL",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["Thanks, you too.", "Okay, bye."],
+                "logic": "The agent delivers the final script and the call is terminated."
+            }
+        ]
+    },
+    # 60. Closing Sequence: Asks about setting phone reminders.
+    "N_AskAboutReminderSetup_V1_Adaptive": {
+        "purpose": "Asks user if they know how to set a reminder on their phone.",
+        "transitions": [
+            {
+                "transition_name": "Knows_How",
+                "target_node": "N_CheckForTextReceipt_V1_Adaptive",
+                "trigger_keywords": ["yes", "i do"],
+                "example_responses": ["Yes, I know how."],
+                "logic": "User confirms they know how to set a reminder."
+            },
+            {
+                "transition_name": "Needs_Help",
+                "target_node": "N_CheckForTextReceipt_V1_Adaptive",
+                "trigger_keywords": ["no", "i don't"],
+                "example_responses": ["No, I'm not sure."],
+                "logic": "User indicates they do not know how to set a reminder."
+            }
+        ]
+    },
+    # 61. Legacy Closing: An older version of the final end-call node.
+    "N_Finalize_And_EndCall_V1_Adaptive": {
+        "purpose": "Legacy version of the final end-call node.",
+        "transitions": [
+            {
+                "transition_name": "End_Call",
+                "target_node": "END_CALL",
+                "trigger_keywords": ["*any*"],
+                "example_responses": ["Okay, thanks."],
+                "logic": "The agent delivers the final script and the call is terminated."
+            }
+        ]
+    }
+}

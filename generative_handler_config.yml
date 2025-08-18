@@ -1,0 +1,213 @@
+# Configuration for Generative Objection Handler
+# This file controls the behavior of the dynamic objection handling system
+
+# Response generation settings
+response_settings:
+  max_length: 100  # Maximum words in response
+  max_sentences: 3  # Maximum sentences (soft limit)
+  min_sentences: 1  # Minimum sentences
+  reading_level: 6  # Target reading level (grade)
+  
+# Strategy settings
+strategy_settings:
+  max_attempts_per_node: 3  # Maximum attempts before moving on
+  escalation_threshold: 2  # When to escalate strategy intensity
+  strategy_timeout_seconds: 30  # How long before considering a strategy failed
+  
+  # Strategy selection preferences by objection type
+  objection_strategies:
+    busy:
+      preferred_order:
+        - impact_focus
+        - future_pacing
+        - problem_agitation
+        - reframe_perspective
+    not_interested:
+      preferred_order:
+        - direct_value
+        - social_proof
+        - emotional_appeal
+        - scarcity_urgency
+    skeptical:
+      preferred_order:
+        - logical_reasoning
+        - social_proof
+        - authority_credibility
+        - direct_value
+    no_money:
+      preferred_order:
+        - problem_agitation
+        - future_pacing
+        - impact_focus
+        - reframe_perspective
+    need_to_think:
+      preferred_order:
+        - scarcity_urgency
+        - social_proof
+        - future_pacing
+        - logical_reasoning
+    general:
+      preferred_order:
+        - direct_value
+        - impact_focus
+        - social_proof
+        - future_pacing
+
+# Context integration settings
+context_integration:
+  acknowledgment_probability: 0.7  # How often to acknowledge user statements
+  weave_threshold: 15  # Word count threshold for weaving vs acknowledging
+  bridge_phrases_enabled: true
+  natural_transitions: true
+  
+# Personality adaptation (DISC model)
+personality_adaptation:
+  D:  # Dominant
+    tone: direct
+    pace: fast
+    focus: results
+    preferred_strategies:
+      - direct_value
+      - logical_reasoning
+      - scarcity_urgency
+      - authority_credibility
+  I:  # Influential
+    tone: enthusiastic
+    pace: energetic
+    focus: social
+    preferred_strategies:
+      - social_proof
+      - emotional_appeal
+      - future_pacing
+      - impact_focus
+  S:  # Steady
+    tone: supportive
+    pace: moderate
+    focus: stability
+    preferred_strategies:
+      - impact_focus
+      - social_proof
+      - authority_credibility
+      - reframe_perspective
+  C:  # Conscientious
+    tone: analytical
+    pace: deliberate
+    focus: details
+    preferred_strategies:
+      - logical_reasoning
+      - authority_credibility
+      - problem_agitation
+      - direct_value
+
+# Validation rules
+validation:
+  banned_phrases:
+    - "as an ai"
+    - "i am a language model"
+    - "i cannot"
+    - "i don't have the ability"
+    - "my programming"
+    - "i'm just a"
+    - "artificial intelligence"
+    - "no rush"
+    - "no worries"
+    - "what questions come to mind?"
+  
+  robotic_patterns:
+    - "I understand. I understand"
+    - "I get it. I get it"
+    - "I hear you. I hear you"
+    
+  similarity_threshold: 0.7  # How similar responses can be (0-1)
+  
+# Transition evaluation
+transition_evaluation:
+  require_explicit_confirmation: false  # Whether transitions need explicit yes/no
+  implicit_agreement_keywords:
+    - "sounds good"
+    - "tell me more"
+    - "go on"
+    - "continue"
+    - "okay"
+    - "sure"
+  
+  objection_keywords:
+    - "but"
+    - "however"
+    - "although"
+    - "except"
+    - "problem is"
+    
+# Conversation flow settings
+conversation_flow:
+  max_history_size: 50  # Maximum conversation turns to track
+  context_window: 6  # Recent turns to include in prompt
+  track_global_strategies: true  # Track strategies across entire conversation
+  track_node_strategies: true  # Track strategies per node
+  
+# Logging and debugging
+logging:
+  level: INFO  # DEBUG, INFO, WARNING, ERROR
+  log_prompts: true  # Log generated prompts
+  log_responses: true  # Log LLM responses
+  log_strategies: true  # Log strategy selection
+  log_transitions: true  # Log transition decisions
+  performance_tracking: true  # Track response times
+  
+# LLM settings (for when actual LLM is integrated)
+llm_settings:
+  provider: openai  # openai, anthropic, local
+  model: gpt-4  # Model to use
+  temperature: 0.7  # Response randomness (0-1)
+  max_tokens: 150  # Maximum tokens in response
+  timeout_seconds: 10  # API timeout
+  retry_attempts: 2  # Number of retries on failure
+  fallback_to_template: true  # Use template if LLM fails
+  
+# Template settings
+template_settings:
+  use_templates: true  # Enable template-based responses
+  template_variation: true  # Vary template selection
+  custom_variables:
+    income_amount: "$20k"
+    student_count: "7,500"
+    site_income: "$2k"
+    company_years: "10"
+    success_rate: "87%"
+    
+# Performance optimization
+performance:
+  cache_responses: false  # Cache similar responses
+  preload_templates: true  # Load templates on startup
+  parallel_validation: false  # Validate in parallel
+  
+# Feature flags
+features:
+  use_generative_handler: true  # Use new generative system
+  track_conversation_state: true  # Enable state tracking
+  dynamic_strategy_selection: true  # Enable dynamic strategies
+  context_integration: true  # Enable context weaving
+  personality_adaptation: true  # Enable DISC adaptation
+  transition_evaluation: true  # Enable transition checking
+  response_validation: true  # Enable response validation
+  kb_return_envelope: true  # Normalize KBProcessor.query return shape
+  validate_scripted_lines: true # Enable validation and sanitization of scripted lines
+
+# Conversation flow settings
+conversation_flow:
+  max_history_size: 50  # Maximum conversation turns to track
+  context_window: 6  # Recent turns to include in prompt
+  track_global_strategies: true  # Track strategies across entire conversation
+  track_node_strategies: true  # Track strategies per node
+  max_info_attempts: 3 # Maximum attempts for info-question retries
+  
+# Testing and development
+testing:
+  mock_llm_responses: false  # Use mock responses for testing
+  verbose_logging: false  # Extra logging for debugging
+  save_conversations: true  # Save conversations for analysis
+  conversation_output_dir: "./conversation_logs"
+
+# Goal-aligned per-node pivots (bounded-choice questions)
+pivot_map:
+  N_IntroduceModel_And_AskQuestions_V3_Adaptive: "Want the 20-second overview or the 2-minute version?"

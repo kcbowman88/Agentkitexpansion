@@ -1,0 +1,3437 @@
+import logging
+from dataclasses import dataclass, field
+from typing import Optional, Type
+from enum import Enum
+import time
+import asyncio
+import re
+
+from livekit.agents import Agent, function_tool, RunContext, llm
+from call_flow import nodes
+from global_prompt import GLOBAL_PROMPT
+from disc_classifier import DISCClassifier, DISCProfile
+from objection_handler import ObjectionHandler, ObjectionContext, ObjectionType
+from tactical_responder import TacticalResponder
+from ab_testing import ab_test_manager
+from analytics import conversation_analytics
+from kb_processor import KBProcessor, get_concise_snippet
+
+# --- Response Finalizer: module-level (fixes NameError) ---
+RESPONSE_FINALIZER_ENABLED = True
+DEBUG_VALIDATORS = False
+
+# Phrases we never want to emit (meta/process/easy-outs)
+FINALIZER_DENYLIST = [
+    "one quick line", "under 25 seconds", "as a language model",
+    "i cannot", "i'm just an ai", "not interested", "no thanks",
+    "maybe later", "stop calling", "unsubscribe"
+]
+
+# KB template artifacts that must never reach TTS
+KB_TEMPLATE_ARTIFACT_TERMS = [
+    "works cited", "references:", "bibliography", "citations",
+    "now, answer the user’s question directly", "now, answer the user's question directly",
+    "answer:", "final answer:", "reference:", "source:"
+]
+
+KB_URL_LIKE_PATTERN = r"(?:https?://|www\\.)\\S+"
+
+def _sentence_split(text: str) -> list:
+    return [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
+
+def _shingles(s: str, n: int = 6) -> set:
+    tokens = s.lower().split()
+    if len(tokens) < n:
+        return set([" ".join(tokens)]) if tokens else set()
+    return set([" ".join(tokens[i:i+n]) for i in range(len(tokens)-n+1)])
+
+def _jaccard(a: str, b: str, n: int = 6) -> float:
+    sa, sb = _shingles(a, n), _shingles(b, n)
+    if not sa and not sb:
+        return 0.0
+    inter = len(sa & sb)
+    union = len(sa | sb) or 1
+    return inter / union
+
+def _normalize_plain(s: str) -> str:
+    try:
+        import string as _string, re as _re
+        return s.translate(str.maketrans('', '', _string.punctuation)).lower().strip()
+    except Exception:
+        return (s or "").lower().strip()
+
+def _sanitize_kb_template_artifacts(text: str) -> str:
+    """
+    Strip KB template artifacts like 'Works cited', 'Answer:', bibliographic lines, and naked URLs.
+    Keep short, conversational content.
+    """
+    try:
+        t = (text or "").strip()
+        tl = t.lower()
+
+        # Remove artifact terms anywhere
+        if any(term in tl for term in KB_TEMPLATE_ARTIFACT_TERMS):
+            # Remove lines that contain artifact terms
+            lines = [ln for ln in t.splitlines() if not any(term in ln.lower() for term in KB_TEMPLATE_ARTIFACT_TERMS)]
+            t = " ".join([ln.strip() for ln in lines if ln.strip()]).strip()
+            tl = t.lower()
+
+        # Remove numbered citation lines like "1) http...", "[1] http...", "- https://.."
+        import re
+        cleaned_lines = []
+        for ln in t.splitlines() if "\n" in t else t.split(". "):
+            ln_strip = ln.strip()
+            if re.match(r"^(\\s*[\\-\\*]\\s*\\[?\\d+\\]?\\)?\\s*\\S+://)", ln_strip, flags=re.IGNORECASE):
+                continue
+            if re.match(r"^(\\s*\\d+\\)|\\[\\d+\\])", ln_strip):
+                # Likely a citation entry
+                continue
+            cleaned_lines.append(ln_strip)
+        t = " ".join([ln for ln in cleaned_lines if ln]).strip()
+
+        # Remove raw URLs that look like references
+        t = re.sub(KB_URL_LIKE_PATTERN, "", t).strip()
+
+        # Collapse extra spaces
+        t = re.sub(r"\\s{2,}", " ", t).strip()
+
+        return t or "Let's keep moving."
+    except Exception:
+        return text
+
+def _sanitize_opener_response(text: str, persona: str = "S") -> str:
+    """
+    Global last-line opener sanitizer:
+      - Composite kill-switch for known verbose PSP: both ('not just any student') AND ('do you mind if i take 20 sec/seconds')
+      - Enforce S-tone 'No rush,' + ack-first + pivot-token presence
+      - Cap to 3+1 and ensure pivot-last when 4 sentences
+    """
+    try:
+        t = (text or "").strip()
+        nl = _normalize_plain(t)
+
+        # Composite kill-switch
+        has_student = any(k in nl for k in ("im not just any student","i am not just any student","i’m not just any student"))
+        has_20s = any(k in nl for k in (
+            "do you mind if i take 20 seconds", "do you mind if i take 20 sec",
+            "do you mind if i take 20second", "do you mind if i take 20‑seconds", "do you mind if i take 20–seconds"
+        ))
+        if has_student and has_20s:
+            return "No rush, I hear you. Let's get back to the next step."
+
+        # Neutralize blunt lead
+        sents = _sentence_split(t)
+        if sents and re.match(r"^\s*let\s+me\s+be\s+blunt\s*$", (sents[0] or "").strip().lower()):
+            tail = ". ".join(sents[1:]).strip()
+            t = ("I hear you." + (f" {tail}." if tail else "")).strip()
+            sents = _sentence_split(t)
+
+        # Ack-first
+        ack_tokens = ("i understand", "i hear you", "no worries", "understood", "totally get", "makes sense", "fair point")
+        if sents and not any(tok in (sents[0] or "").lower() for tok in ack_tokens):
+            t = ("I hear you. " + t).strip()
+            sents = _sentence_split(t)
+
+        # Ensure pivot sentence
+        pivot_tokens = ("let’s", "let's", "back to", "returning", "bottom line", "quick pivot", "let us")
+        has_pivot = any(any(tok in (s or "").lower() for tok in pivot_tokens) for s in sents)
+        if not has_pivot:
+            t = (t.rstrip(".!?") + ". Let's get back to the next step.").strip()
+            sents = _sentence_split(t)
+
+        # Enforce S-tone for opener family by default
+        if (persona or "S").upper() == "S" and not t.strip().startswith("No rush,"):
+            t = "No rush, " + t
+
+        # Cap to 3+1 with pivot-last when 4
+        sents = _sentence_split(t)
+        if len(sents) > 4:
+            sents = sents[:3] + [sents[-1]]
+        if len(sents) == 4 and not any(tok in (sents[-1] or "").lower() for tok in pivot_tokens):
+            # Move/synthesize pivot to last
+            pidx = next((i for i, s in enumerate(sents) if any(tok in (s or "").lower() for tok in pivot_tokens)), -1)
+            if pidx >= 0 and pidx != 3:
+                pivot_sent = sents[pidx]
+                base = [s for j, s in enumerate(sents[:3]) if j != pidx]
+                sents = base[:3] + [pivot_sent]
+            else:
+                sents = sents[:3] + ["Let's get back to the next step."]
+            t = ". ".join([s.rstrip(".") for s in sents]) + "."
+
+        # Final composite check again post-shaping (defensive)
+        nl2 = _normalize_plain(t)
+        if any(k in nl2 for k in ("im not just any student","i am not just any student","i’m not just any student")) and \
+           any(k in nl2 for k in ("do you mind if i take 20 seconds","do you mind if i take 20 sec","do you mind if i take 20second","do you mind if i take 20‑seconds","do you mind if i take 20–seconds")):
+            return "No rush, I hear you. Let's get back to the next step."
+
+        return t
+    except Exception:
+        return text
+
+def finalize_agent_text(state, text: str, *, is_objection: bool = False) -> str:
+    """
+    Enforce denylist, anti-repetition (exact + 6-gram near-dup), and sentence cap for objections.
+    Updates state.agent_utterance_history upon acceptance.
+    """
+    try:
+        if not RESPONSE_FINALIZER_ENABLED:
+            if isinstance(getattr(state, "agent_utterance_history", None), list):
+                state.agent_utterance_history.append(text)
+            return text
+
+        t = (text or "").strip()
+        tl = t.lower()
+
+        # Last-mile KB artifact sanitize on all outputs
+        t = _sanitize_kb_template_artifacts(t)
+        tl = t.lower()
+
+        # Denylist block
+        if any(term in tl for term in FINALIZER_DENYLIST):
+            t = "Let’s keep moving."
+
+        # Opener objection hard guard: never offer callbacks/scheduling language from opener
+        try:
+            node_id_guard = getattr(state, "current_node_id", "") or ""
+            if is_objection and node_id_guard == "N_Opener_StackingIncomeHook_V3_CreativeTactic":
+                # phrases that imply scheduling/callbacks or off-channel routes we disallow at opener
+                opener_callback_scheduling_deny = [
+                    "call you back", "call me back", "call back", "ring you later", "ring me later",
+                    "later today", "some other time", "another time", "schedule", "reschedule",
+                    "book a time", "set up a time", "text you the link", "text me the link",
+                    "email you", "send an email", "send you an email", "shoot you a text"
+                ]
+                if any(p in tl for p in opener_callback_scheduling_deny):
+                    print("DEBUG: opener_guard_callback_scheduling_denied")
+                    # Replace with neutral momentum-preserving line without changing node flow
+                    t = "Understood. Let’s keep momentum."
+                    tl = t.lower()
+        except Exception:
+            pass
+
+        # Objection-global composite kill-switch and opener invariants (post-failure strategy v4)
+        try:
+            def _normalize_plain_local(s: str) -> str:
+                import string as _string
+                return (s or "").translate(str.maketrans('', '', _string.punctuation)).lower().strip()
+            nl0 = _normalize_plain_local(t)
+            has_student = any(k in nl0 for k in ("im not just any student","i am not just any student","i’m not just any student"))
+            has_20s = any(k in nl0 for k in ("do you mind if i take 20 seconds","do you mind if i take 20 sec","do you mind if i take 20second","do you mind if i take 20‑seconds","do you mind if i take 20–seconds"))
+            if is_objection and has_student and has_20s:
+                print("DEBUG: finalize_agent_text_killswitch_objection_composite")
+                t = "No rush, I hear you. Let's get back to the next step."
+                tl = t.lower()
+        except Exception:
+            pass
+
+        # Sentence cap and guards for objection turns (pivot-aware 3+1 policy + ack/pivot enforcement)
+        sents = _sentence_split(t)
+        if is_objection:
+            # If opener-family, enforce S-tone prefix early based on current node, if available
+            try:
+                node_id = getattr(state, "current_node_id", "") or ""
+                if node_id in ("N_Opener_StackingIncomeHook_V3_CreativeTactic",
+                               "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                               "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady"):
+                    if not t.strip().startswith("No rush,"):
+                        t = ("No rush, " + t) if t else "No rush, I hear you. Let's get back to the next step."
+                        sents = _sentence_split(t)
+            except Exception:
+                pass
+            ack_tokens = ("i understand", "i hear you", "no worries", "understood", "totally get", "makes sense", "fair point")
+            pivot_tokens = ("let’s", "let's", "back to", "returning", "bottom line", "quick pivot", "let us")
+
+            # Normalize leading "Let me be blunt." to ack-first
+            try:
+                _raw_sents = list(sents)
+                if _raw_sents and re.match(r"^\s*let\s+me\s+be\s+blunt\s*$", (_raw_sents[0] or "").strip().lower()):
+                    tail = ". ".join(_raw_sents[1:]).strip()
+                    t = ("I hear you." + (f" {tail}." if tail else "")).strip()
+                    sents = _sentence_split(t)
+            except Exception:
+                pass
+
+            # Ensure first sentence contains acknowledgment
+            try:
+                if sents and not any(tok in (sents[0] or "").lower() for tok in ack_tokens):
+                    t = ("I hear you. " + t).strip()
+                    sents = _sentence_split(t)
+            except Exception:
+                pass
+
+            # Ensure at least one pivot/transition token exists; if absent, append a compliant pivot sentence
+            has_pivot = any(any(tok in (s or "").lower() for tok in pivot_tokens) for s in sents)
+            if not has_pivot:
+                t = (t.rstrip(".!?") + ". Let's get back to the next step.").strip()
+                sents = _sentence_split(t)
+
+            # Enforce 3+1 cap with pivot last when 4 sentences
+            if len(sents) > 4:
+                # keep first 3 substantive + last (which may or may not be pivot; we will fix below)
+                sents = sents[:3] + [sents[-1]]
+            if len(sents) == 4:
+                # make sure last has pivot token; if not, relocate or synthesize
+                if not any(tok in (sents[-1] or "").lower() for tok in pivot_tokens):
+                    # find a pivot-bearing sentence among first 4
+                    pivot_idx = None
+                    for i in range(3, -1, -1):
+                        if any(tok in (sents[i] or "").lower() for tok in pivot_tokens):
+                            pivot_idx = i
+                            break
+                    if pivot_idx is not None:
+                        pivot_sent = sents[pivot_idx]
+                        base = [s for j, s in enumerate(sents[:3]) if j != pivot_idx]
+                        sents = base[:3] + [pivot_sent]
+                    else:
+                        sents = sents[:3] + ["Let's get back to the next step."]
+
+            # Recompose objection text
+            t = ". ".join([s.rstrip(".") for s in sents]) + "."
+        else:
+            # non-objection path unchanged
+            pass
+
+        # Within-turn repetition: drop duplicate sentences
+        if len(sents) > 1:
+            dedup = []
+            seen = set()
+            for s in sents:
+                if s.lower() in seen:
+                    continue
+                seen.add(s.lower())
+                dedup.append(s)
+            if len(dedup) != len(sents):
+                t = ". ".join(dedup) + "."
+
+        # Cross-turn repetition: exact and near-dup vs last K utterances
+        history = getattr(state, "agent_utterance_history", []) or []
+        K = 6
+        recent = history[-K:]
+        # When objection with pivot tokens, avoid replacing entire text with generic anti-repeat lines (preserve pivot)
+        has_pivot_global = False
+        if is_objection:
+            try:
+                pivot_tokens = ("let’s", "let's", "back to", "returning", "bottom line", "quick pivot", "let us")
+                parts_tmp = _sentence_split(t)
+                has_pivot_global = any(any(tok in (s or "").lower() for tok in pivot_tokens) for s in parts_tmp)
+            except Exception:
+                has_pivot_global = False
+        for prev in recent:
+            if t.strip().lower() == prev.strip().lower():
+                if not has_pivot_global:
+                    t = "Understood. Let’s keep momentum."
+                break
+            if _jaccard(t, prev, n=6) > 0.6:
+                if not has_pivot_global:
+                    t = "Got it. Moving forward."
+                break
+
+        if not t:
+            t = "Let’s keep moving."
+
+        if isinstance(getattr(state, "agent_utterance_history", None), list):
+            state.agent_utterance_history.append(t)
+
+        if DEBUG_VALIDATORS:
+            logging.debug(f"FINALIZER_OUT: {t}")
+
+        return t
+    except Exception as e:
+        logging.error(f"finalize_agent_text error: {e}", exc_info=True)
+        try:
+            if isinstance(getattr(state, "agent_utterance_history", None), list):
+                state.agent_utterance_history.append(text)
+        except Exception:
+            pass
+        return text
+
+# --- State Management ---
+@dataclass
+class CallFlowState:
+    """Manages the state of the conversation flow."""
+    customer_name: Optional[str] = None
+    current_node_id: str = "N001A_NameConfirmation_Only"
+    
+    # Enhanced state variables
+    personality_type: Optional[str] = None  # DISC personality type (D, I, S, C)
+    emotional_state: Optional[str] = None  # Emotional state (positive, negative, neutral)
+    objection_history: list = field(default_factory=list)  # Track user objections
+    conversation_context: dict = field(default_factory=dict)  # Track conversation context
+    user_preferences: dict = field(default_factory=dict)  # Track user preferences
+    tactic_history: list = field(default_factory=list)  # Track used tactics to prevent repetition
+    appointment_details: dict = field(default_factory=dict)  # Track appointment details
+    qualification_status: dict = field(default_factory=dict)  # Track qualification progress
+    conversation_history: list = field(default_factory=list)  # Track conversation history for memory
+    # A2: stable thread_id for AB-guard hashing and deterministic rotation
+    thread_id: Optional[str] = None
+    # New flag to manage the state after an objection
+    waiting_for_objection_response: bool = False
+    node_goal_achieved: bool = False
+    objection_loop_counter: int = 0
+    # Finalizer history for anti-repetition and gating
+    agent_utterance_history: list = field(default_factory=list)
+    
+# --- Agent Registry (Simplified) ---
+AGENT_REGISTRY: dict = {}
+
+def register_agent(node_id: str):
+    """Decorator to register an agent class for a specific node_id."""
+    def decorator(cls: Type[Agent]):
+        AGENT_REGISTRY[node_id] = cls
+        return cls
+    return decorator
+
+# --- The Unified Call Flow Agent ---
+class CallFlowAgent(Agent):
+    """
+    A single, unified agent that drives the entire call flow.
+    Its behavior is determined by the current_node_id in the CallFlowState.
+    """
+
+    def __init__(self, instructions: str = ""):
+        # The agent's instructions and tools will be updated dynamically each turn.
+        super().__init__(instructions=instructions)
+        
+        # Initialize enhanced components
+        self.disc_classifier = DISCClassifier()
+        # Initialize ObjectionHandler with a default persona, which will be updated later
+        # The persona will be dynamically updated from state.personality_type during handling
+        self.objection_handler = ObjectionHandler(persona="S") # Default to 'S' (Steady)
+        self.tactical_responder = TacticalResponder()
+        self.kb_processor = KBProcessor()
+        
+        # Initialize session attribute to make it settable
+        self._session = None
+        
+        # Dead air handling (disabled)
+        # self.dead_air_timeout = 5.0  # seconds
+        # self.dead_air_task = None
+        
+        logging.info("CallFlowAgent initialized with enhanced features.")
+    @property
+    def session(self):
+        return self._session
+    
+    @session.setter
+    def session(self, value):
+        self._session = value
+    
+    def _fallback_transition(self, state: CallFlowState, user_input: str) -> Optional[str]:
+        """
+        Sophisticated fallback mechanism for unhandled inputs
+        
+        Args:
+            state (CallFlowState): The current conversation state
+            user_input (str): The user's input
+            
+        Returns:
+            Optional[str]: The ID of the next node to transition to, or None if no fallback available
+        """
+        try:
+            logging.warning(f"Using fallback transition for input: {user_input}")
+            
+            # Analyze the user input to determine the best fallback strategy
+            sentiment_score = state.conversation_context.get('sentiment', {}).get('score', 0.0)
+            personality_type = state.personality_type or "S"
+            
+            # Check for specific keywords in the input
+            user_input_lower = user_input.lower()
+            
+            # If user is asking a question, try to answer it
+            if any(word in user_input_lower for word in ['what', 'how', 'why', 'when', 'where', 'explain']):
+                # Try to transition to a Q&A node
+                if 'N_KB_Q&A_With_StrategicNarrative_V3_Adaptive' in nodes:
+                    logging.info("Attempting to transition to KB Q&A node")
+                    return 'N_KB_Q&A_With_StrategicNarrative_V3_Adaptive'
+                    
+            # If user seems confused or unsure, provide clarification
+            if sentiment_score < -0.3 or any(word in user_input_lower for word in ['confused', 'unclear', 'not sure', 'huh', 'what']):
+                # Try to transition to a clarification node
+                if 'N_Obj_EarlyDismiss_AskShareBackground_V7' in nodes:
+                    return 'N_Obj_EarlyDismiss_AskShareBackground_V7'
+                    
+            # If user is showing interest, try to engage further
+            if sentiment_score > 0.3 or any(word in user_input_lower for word in ['interested', 'tell me more', 'sounds good']):
+                # Try to transition to an engagement node
+                if 'N_IntroduceModel_And_AskQuestions_V3_Adaptive' in nodes:
+                    return 'N_IntroduceModel_And_AskQuestions_V3_Adaptive'
+                    
+            # For Dominant personalities, be direct
+            if personality_type == "D":
+                if 'N_IntroduceModel_And_AskQuestions_V3_Adaptive_Dominant' in nodes:
+                    return 'N_IntroduceModel_And_AskQuestions_V3_Adaptive_Dominant'
+                    
+            # For Influential personalities, be engaging
+            if personality_type == "I":
+                if 'N_IntroduceModel_And_AskQuestions_V3_Adaptive_Influential' in nodes:
+                    return 'N_IntroduceModel_And_AskQuestions_V3_Adaptive_Influential'
+                    
+            # For Steady personalities, be patient
+            if personality_type == "S":
+                if 'N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady' in nodes:
+                    return 'N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady'
+                    
+            # For Conscientious personalities, be detailed
+            if personality_type == "C":
+                if 'N_IntroduceModel_And_AskQuestions_V3_Adaptive_Conscientious' in nodes:
+                    return 'N_IntroduceModel_And_AskQuestions_V3_Adaptive_Conscientious'
+                    
+            # If all else fails, try to get back on track with the main flow
+            conversation_history = state.conversation_history
+            if conversation_history:
+                # Look at the last few nodes visited to determine where to go next
+                recent_nodes = [entry.get('node_id') for entry in conversation_history[-10:] if entry.get('node_id')]
+                if recent_nodes:
+                    # Try to find a node that comes after one of the recent nodes
+                    for node_id in recent_nodes:
+                        node = nodes.get(node_id)
+                        if node and 'default' in node.get('transitions', {}):
+                            return node['transitions']['default']
+                            
+            # Ultimate fallback - go back to the introduction
+            return 'N001A_NameConfirmation_Only'
+        except Exception as e:
+            logging.error(f"Error in _fallback_transition: {e}", exc_info=True)
+            # Ultimate fallback - go back to the introduction
+            return 'N001A_NameConfirmation_Only'
+    
+    def _summarize_conversation_context(self, state: CallFlowState) -> str:
+        """
+        Summarize the conversation history for context-aware responses
+        
+        Args:
+            state (CallFlowState): The current conversation state
+            
+        Returns:
+            str: A summary of the conversation context
+        """
+        try:
+            if not state.conversation_history:
+                return "No previous conversation history."
+            
+            # Get the last 5 exchanges (user and agent)
+            recent_exchanges = state.conversation_history[-10:]  # Last 5 exchanges (2 messages each)
+            
+            summary = "Recent conversation context:\n"
+            for exchange in recent_exchanges:
+                speaker = exchange.get('speaker', 'unknown')
+                text = exchange.get('text', '')
+                summary += f"- {speaker}: {text}\n"
+                
+            # Add personality and emotional insights
+            if state.personality_type:
+                summary += f"\nUser personality type: {state.personality_type}\n"
+                
+            if state.emotional_state:
+                summary += f"User emotional state: {state.emotional_state}\n"
+                
+            # Add qualification status
+            if state.qualification_status:
+                summary += f"\nQualification status: {state.qualification_status}\n"
+                
+            return summary
+        except Exception as e:
+            logging.error(f"Error in _summarize_conversation_context: {e}", exc_info=True)
+            return "Error summarizing conversation context."
+    
+    def _update_qualification_status(self, state: CallFlowState, user_input: str):
+        """
+        Update qualification status based on user input and conversation history
+        
+        Args:
+            state (CallFlowState): The current conversation state
+            user_input (str): The user's response
+        """
+        try:
+            # Initialize qualification status if not present
+            if not state.qualification_status:
+                state.qualification_status = {
+                    'engagement_level': 0,  # 0-10 scale
+                    'understanding_level': 0,  # 0-10 scale
+                    'goal_alignment': 0,  # 0-10 scale
+                    'financial_readiness': 0,  # 0-10 scale
+                    'overall_score': 0  # 0-10 scale
+                }
+            
+            # Update engagement level based on response length and sentiment
+            response_length = len(user_input.split())
+            sentiment_score = state.conversation_context.get('sentiment', {}).get('score', 0.0)
+            
+            if response_length > 20:
+                state.qualification_status['engagement_level'] = min(10, state.qualification_status['engagement_level'] + 2)
+            elif response_length > 10:
+                state.qualification_status['engagement_level'] = min(10, state.qualification_status['engagement_level'] + 1)
+            elif response_length < 5 and sentiment_score < -0.3:
+               state.qualification_status['engagement_level'] = max(0, state.qualification_status['engagement_level'] - 1)
+               
+            # Update understanding level based on questions asked
+            question_indicators = ['what', 'how', 'why', 'when', 'where', 'explain', 'tell me']
+            question_count = sum(1 for indicator in question_indicators if indicator in user_input.lower())
+            
+            if question_count > 2:
+                state.qualification_status['understanding_level'] = min(10, state.qualification_status['understanding_level'] + 2)
+            elif question_count > 0:
+                state.qualification_status['understanding_level'] = min(10, state.qualification_status['understanding_level'] + 1)
+                
+            # Update goal alignment based on keywords
+            goal_keywords = ['income', 'money', 'earn', 'make', 'passive', 'business', 'opportunity']
+            goal_matches = sum(1 for keyword in goal_keywords if keyword in user_input.lower())
+            
+            if goal_matches > 3:
+                state.qualification_status['goal_alignment'] = min(10, state.qualification_status['goal_alignment'] + 2)
+            elif goal_matches > 0:
+                state.qualification_status['goal_alignment'] = min(10, state.qualification_status['goal_alignment'] + 1)
+                
+            # Update financial readiness based on financial keywords
+            financial_keywords = ['capital', 'money', 'invest', 'budget', 'expense', 'cost', 'afford']
+            financial_matches = sum(1 for keyword in financial_keywords if keyword in user_input.lower())
+            
+            if financial_matches > 2:
+                state.qualification_status['financial_readiness'] = min(10, state.qualification_status['financial_readiness'] + 2)
+            elif financial_matches > 0:
+                state.qualification_status['financial_readiness'] = min(10, state.qualification_status['financial_readiness'] + 1)
+                
+            # Calculate overall score as average of all factors
+            state.qualification_status['overall_score'] = (
+                state.qualification_status['engagement_level'] +
+                state.qualification_status['understanding_level'] +
+                state.qualification_status['goal_alignment'] +
+                state.qualification_status['financial_readiness']
+            ) / 4
+            
+            logging.info(f"Updated qualification status: {state.qualification_status}")
+        except Exception as e:
+            logging.error(f"Error in _update_qualification_status: {e}", exc_info=True)
+            # Continue with default qualification status
+            if not state.qualification_status:
+                state.qualification_status = {
+                    'engagement_level': 5,
+                    'understanding_level': 5,
+                    'goal_alignment': 5,
+                    'financial_readiness': 5,
+                    'overall_score': 5
+                }
+    
+    def _analyze_sentiment(self, text: str) -> float:
+        """
+        Simple sentiment analysis based on keyword matching.
+        
+        Args:
+            text (str): The text to analyze
+            
+        Returns:
+            float: Sentiment score from -1 (negative) to 1 (positive)
+        """
+        try:
+            # Simple keyword-based sentiment analysis
+            positive_words = [
+                "good", "great", "excellent", "amazing", "wonderful", "fantastic",
+                "love", "like", "enjoy", "happy", "pleased", "satisfied", "excited",
+                "interested", "curious", "fascinating", "intriguing", "promising"
+            ]
+            
+            negative_words = [
+                "bad", "terrible", "awful", "horrible", "hate", "dislike", "angry",
+                "frustrated", "annoyed", "disappointed", "concerned", "worried",
+                "skeptical", "doubtful", "uncertain", "confused", "unsure"
+            ]
+            
+            # Normalize text
+            text_lower = text.lower()
+            
+            # Count positive and negative words
+            positive_count = sum(1 for word in positive_words if word in text_lower)
+            negative_count = sum(1 for word in negative_words if word in text_lower)
+            
+            # Calculate sentiment score
+            total_emotional_words = positive_count + negative_count
+            if total_emotional_words == 0:
+                return 0.0  # Neutral sentiment
+            
+            sentiment_score = (positive_count - negative_count) / total_emotional_words
+            return sentiment_score
+        except Exception as e:
+            logging.error(f"Error in _analyze_sentiment: {e}", exc_info=True)
+            return 0.0  # Neutral sentiment as fallback
+            
+    async def on_enter(self):
+        """
+        Entry point for each state in the call flow.
+        This method is called when the agent starts and after every successful transition.
+        """
+        try:
+            # This method is kept for backward compatibility with the existing node transition system
+            state: CallFlowState = self.session.userdata
+            current_node = nodes.get(state.current_node_id)
+            
+            if not current_node:
+                logging.error(f"Node '{state.current_node_id}' not found in call_flow. Closing session.")
+                await self.session.close()
+                return
+            
+            logging.info(f"Entering node: {state.current_node_id}")
+            
+            # 1. Speak the script for the current node
+            script = current_node["script"]
+            # Simple templating for customer_name
+            if state.customer_name:
+                script = script.replace("{{customer_name}}", state.customer_name)
+            
+            # Check if session is properly initialized before speaking
+            if self.session is None:
+                logging.error("Session is not initialized")
+                return
+                
+            # Check if STT is available
+            if self.session.stt is None:
+                logging.warning("STT is not available. Agent may not be able to process user input.")
+                
+            # Finalize scripted output before saying it
+            script = finalize_agent_text(state, script, is_objection=False)
+            await self.session.say(script)
+            logging.info(f"Agent said: '{script}'")
+            
+            # 2. Start dead air detection after speaking (disabled)
+            # self._start_dead_air_detection()
+            
+            # 3. Wait for user response before transitioning
+            # The transition will happen in the _handle_user_response method
+            # when the user provides input and the LLM selects a transition
+        except Exception as e:
+            logging.error(f"Error in on_enter: {e}", exc_info=True)
+            # Log the error but don't try to recover by restarting the conversation
+            # The session will naturally end if the error is unrecoverable
+
+    async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
+        """
+        Called when the user has finished speaking.
+        
+        Args:
+            turn_ctx (llm.ChatContext): The context for the LLM (the conversation history).
+            new_message (llm.ChatMessage): The new message from the user.
+        """
+        try:
+            # Check if session is properly initialized
+            if self.session is None:
+                logging.error("Session is not initialized in on_user_turn_completed")
+                return
+                
+            # Get the user's input from the new message
+            user_input = ""
+            if new_message.content:
+                if isinstance(new_message.content, list):
+                    # If content is a list, join all elements into a single string
+                    user_input = " ".join(str(item) for item in new_message.content)
+                else:
+                    # If content is already a string, use it as is
+                    user_input = str(new_message.content)
+            
+            # Get the current state
+            state: CallFlowState = self.session.userdata
+            
+            # Ensure thread_id is set once for the conversation (stable)
+            if not state.thread_id:
+                try:
+                    # Prefer a stable session id if available; else derive a pseudo-id from customer_name+start_time
+                    sess = getattr(self, "session", None)
+                    sid = getattr(sess, "id", None) if sess else None
+                    state.thread_id = str(sid) if sid else f"thread::{state.customer_name or 'user'}::{int(time.time())}"
+                except Exception:
+                    state.thread_id = f"thread::{state.customer_name or 'user'}"
+            
+            # Handle the user's response
+            await self._handle_user_response(user_input, state)
+        except Exception as e:
+            logging.error(f"Error in on_user_turn_completed: {e}", exc_info=True)
+            # Log the error but don't try to recover by restarting the conversation
+            # The session will naturally end if the error is unrecoverable
+
+    def _start_dead_air_detection(self):
+        """Start the dead air detection timer (disabled)"""
+        # try:
+        #     # Cancel any existing dead air task
+        #     if self.dead_air_task and not self.dead_air_task.done():
+        #         self.dead_air_task.cancel()
+            
+        #     # Start a new dead air detection task
+        #     self.dead_air_task = asyncio.create_task(self._dead_air_handler(), name="dead_air_detection")
+        # except Exception as e:
+        #     logging.error(f"Error starting dead air detection: {e}")
+        pass
+
+    def _cancel_dead_air_detection(self):
+        """Cancel the dead air detection timer (disabled)"""
+        # try:
+        #     if self.dead_air_task and not self.dead_air_task.done():
+        #         self.dead_air_task.cancel()
+        # except Exception as e:
+        #     logging.error(f"Error canceling dead air detection: {e}")
+        pass
+
+    async def _dead_air_handler(self):
+        """Handle dead air situation (disabled)"""
+        # try:
+        #     await asyncio.sleep(self.dead_air_timeout)
+        #     # If we reach here, dead air was detected
+        #     await self._handle_dead_air()
+        # except asyncio.CancelledError:
+        #     # Timer was cancelled, which means user spoke
+        #     pass
+        # except Exception as e:
+        #     # Log any other exceptions but don't crash the agent
+        #     logging.error(f"Error in dead air handler: {e}")
+        #     # Try to restart dead air detection even if there was an error
+        #     try:
+        #         self._start_dead_air_detection()
+        #     except Exception as restart_error:
+        #         logging.error(f"Error restarting dead air detection: {restart_error}")
+        pass
+
+    async def _handle_dead_air(self):
+        """Handle dead air situation (disabled)"""
+        # try:
+        #     state: CallFlowState = self.session.userdata
+            
+        #     # Get a tactical response for dead air situation
+        #     dead_air_responses = [
+        #         "Hey, you still there?",
+        #         "Hello? Are you still on the line?",
+        #         "I'm here, just waiting to hear your thoughts.",
+        #         "Take your time, I'm listening.",
+        #         "I'm curious about your thoughts on what I've shared.",
+        #         "What questions come to mind as you hear this?"
+        #     ]
+            
+        #     # Select a response based on conversation context
+        #     response = dead_air_responses[0]  # Default to first response
+        #     
+        #     # If we have personality info, try to adapt
+        #     if state.personality_type:
+        #         # In a real implementation, we would adapt the response to personality type
+        #         pass
+            
+        #     logging.info(f"Dead air detected, saying: '{response}'")
+        #     await self.session.say(response)
+            
+        #     # Restart dead air detection
+        #     self._start_dead_air_detection()
+        # except Exception as e:
+        #     # Log any exceptions but don't crash the agent
+        #     logging.error(f"Error handling dead air: {e}")
+        #     # Try to restart dead air detection even if there was an error
+        #     try:
+        #         self._start_dead_air_detection()
+        #     except Exception as restart_error:
+        #         logging.error(f"Error restarting dead air detection: {restart_error}")
+        pass
+
+    def _should_invoke_kb(self, state: "CallFlowState", user_input: str) -> bool:
+        """
+        Gate KB usage. Only allow when user explicitly asks company/about/legitimacy/brand questions
+        or raises company-based objections. Block during opener-family objections by default.
+        # One-shot bypass: if force_kb_once is set (from IntroduceModel inline company-intent),
+        # consume it and bypass gating for this turn.
+        try:
+            if bool(getattr(state, "conversation_context", {}).pop("force_kb_once", False)):
+                logging.info("KB_INLINE: force_kb_once consumed; kb_forced_transition=true; bypassing KB gating this turn.")
+                state.conversation_context["kb_forced_transition"] = True
+                return True
+        except Exception:
+            pass
+        """
+        try:
+            nl = (user_input or "").lower().strip()
+            node = getattr(state, "current_node_id", "") or ""
+            # Block in opener-family unless clearly company-directed
+            opener_family = {
+                "N_Opener_StackingIncomeHook_V3_CreativeTactic",
+                "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady",
+            }
+            company_terms = [
+                "company", "about you", "who are you", "who is this", "what do you guys do",
+                "are you legit", "is this legit", "is this a scam", "scam", "legit", "legitimate",
+                "ippei", "domain", "website", "site", "brand", "about your company", "about your program",
+                "where can i read about you", "reviews", "testimonials"
+            ]
+            has_company_intent = any(term in nl for term in company_terms)
+            # If in opener-family, require explicit company intent
+            if node in opener_family:
+                return has_company_intent
+            # Elsewhere, allow KB when company intent OR explicit factual request likely needing KB
+            factual_terms = ["according to", "source", "evidence", "proof", "data", "stats", "statistics"]
+            return has_company_intent or any(term in nl for term in factual_terms)
+        except Exception:
+            return False
+
+    def _is_company_intent(self, text: str) -> bool:
+        """
+        Lightweight detector for company/legitimacy/factual intent to trigger KB inline answers.
+    async def _maybe_inline_company_kb(self, state: "CallFlowState", user_input: str) -> bool:
+        """
+        If at IntroduceModel node and the user asks about the company/legitimacy/brand,
+        immediately:
+          1) speak a concise one-liner from KB (or fallback),
+          2) force-transition to KB Q&amp;A node,
+          3) speak KB node content in the same turn (handled by _transition_to_node via force_kb_once flag).
+        Returns True if handled inline.
+        """
+        try:
+            node_id = getattr(state, "current_node_id", "") or ""
+            is_intro = node_id.startswith("N_IntroduceModel_And_AskQuestions")
+            if not is_intro:
+                return False
+
+            if not self._is_company_intent(user_input):
+                return False
+
+            # Compose concise company line (KB snippet if available)
+            persona = (state.personality_type or "S").upper()
+            ack = {
+                "D": "Quick background:",
+                "I": "Totally—quick background:",
+                "S": "Gotcha—quick background:",
+                "C": "Brief background:"
+            }.get(persona, "Quick background:")
+
+            snippet = None
+            try:
+                snippet = get_concise_snippet(
+                    node_id="KB_QA",
+                    topic="company_overview",
+                    persona_or_none=persona,
+                    seed_keys=(state.thread_id or "tid", node_id, "inline_company")
+                )
+            except Exception:
+                snippet = None
+
+            kb_line = (snippet or {}).get("text") or "We run a training and support program that teaches the rank-and-bank digital real estate model, with a large student base and strong track record."
+            inline_msg = f"{ack} {kb_line}"
+
+            # mark flags for analytics/handling
+            state.conversation_context["kb_inline_used"] = True
+            state.conversation_context["kb_forced_transition"] = True
+            state.conversation_context["force_kb_once"] = True
+
+            # speak the inline line now
+            inline_msg = finalize_agent_text(state, inline_msg, is_objection=False)
+            await self.session.say(inline_msg)
+            logging.info("kb_inline_used=true msg_spoken")
+
+            # immediately route to KB node; _transition_to_node will honor force_kb_once
+            await self._transition_to_node("N_KB_Q&amp;A_With_StrategicNarrative_V3_Adaptive")
+            return True
+        except Exception as e:
+            logging.error(f"_maybe_inline_company_kb error: {e}", exc_info=True)
+            return False
+        This is intentionally broader than _should_invoke_kb gating logic.
+    async def _maybe_inline_company_and_route_kb(self, user_input: str, state: "CallFlowState") -> bool:
+        """
+        If we're at IntroduceModel and the user expresses company/legitimacy intent,
+        speak a concise company snippet inline, then immediately transition to KB Q&A
+        and speak that script in the same turn (no waiting for user).
+        """
+        try:
+            if state.current_node_id not in (
+                "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady",
+            ):
+                return False
+
+            if not self._is_company_intent(user_input):
+                return False
+
+            persona = (state.personality_type or "S").upper()
+            # Try to fetch a concise snippet; fall back to a safe one-liner
+            sn = None
+            try:
+                sn = get_concise_snippet(
+                    node_id="N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                    topic="company",
+                    persona_or_none=persona,
+                    seed_keys=(state.customer_name or "", state.thread_id or "")
+                )
+            except Exception:
+                sn = None
+
+            snippet_text = (sn or {}).get("text") or "We build and rank local lead-gen sites, then partner with reputable businesses to monetize the inbound leads."
+
+            # Compose ≤2-sentence inline ack + snippet (no meta narration)
+            inline_msg = f"Totally. Quick background: {snippet_text}"
+            inline_msg = finalize_agent_text(state, inline_msg, is_objection=False)
+            await self.session.say(inline_msg)
+            logging.info("kb_inline_used=true | node=IntroduceModel | persona=%s | snippet_id=%s",
+                         persona, (sn or {}).get("id"))
+
+            # Force KB once: bypass gating on next node so we speak KB now
+            state.conversation_context["force_kb_once"] = True
+            state.conversation_context["kb_forced_transition_reason"] = "company_intent_at_introduce_model"
+            logging.info("kb_forced_transition=true | reason=company_intent_at_introduce_model")
+
+            # Immediately route to KB and speak dynamic KB script in same turn
+            await self._transition_to_node("N_KB_Q&A_With_StrategicNarrative_V3_Adaptive")
+            return True
+        except Exception as e:
+            logging.error(f"_maybe_inline_company_and_route_kb error: {e}", exc_info=True)
+            return False
+        """
+        try:
+            nl = (text or "").lower().strip()
+            if not nl:
+                return False
+            company_terms = [
+                "company", "about you", "who are you", "who is this", "what do you guys do",
+                "are you legit", "is this legit", "is this a scam", "scam", "legit", "legitimate",
+                "ippei", "domain", "website", "site", "brand", "about your company", "about your program",
+                "where can i read about you", "reviews", "testimonials"
+            ]
+            # Also treat soft legitimacy probes as company intent
+            soft_trust = ["what's the catch", "whats the catch", "is this for real"]
+            factual_terms = ["according to", "source", "evidence", "proof", "data", "stats", "statistics"]
+            return any(term in nl for term in (company_terms + soft_trust + factual_terms))
+        except Exception:
+            return False
+    async def _handle_objection(self, user_input: str, state: "CallFlowState"):
+        """
+        Bridge method to handle objections during live console runs.
+        Delegates to ObjectionHandler and preserves opener invariants and routing behavior
+        consistent with the harness path inside _handle_user_response.
+        """
+        try:
+            # Guard: sentiment and emotional state
+            sentiment_score = state.conversation_context.get('sentiment', {}).get('score', 0.0)
+            emotional_state = state.emotional_state or "neutral"
+
+            # Categorize objection
+            objection_type_enum = self.objection_handler.categorize_objection(user_input, sentiment_score)
+            objection_type_str = objection_type_enum.name # Get the string name of the enum member
+            objection_category = objection_type_enum.value # Get the string value of the enum member
+
+            # Record analytics/history
+            conversation_analytics.record_objection()
+            # The add_to_history method in ObjectionHandler needs to be updated to accept new parameters
+            # For now, we will skip adding to history if it relies on the old Objection object.
+            # self.objection_handler.add_to_history(objection, state)
+
+            # Handle objection with enhanced parameters including current node and thread id
+            response_obj = self.objection_handler.handle_objection(
+                thread_id=state.thread_id,
+                node_id=state.current_node_id,
+                objection_category=objection_category,
+                objection_type=objection_type_str,
+                user_utterance=user_input
+            )
+            response = response_obj.response
+            continue_handling = response_obj.context_updated # Use context_updated to determine if handling continues
+
+            # Mark PSP follow-up expectation if applicable
+            try:
+                if continue_handling and response in [psp["turn_1"] for psp in self.objection_handler.early_dismissal_psps.values()]:
+                    state.conversation_context['pending_psp_followup'] = response
+            except Exception:
+                pass
+
+            # Finalize and sanitize opener-family objection text
+            resp_final = finalize_agent_text(state, response or "", is_objection=True)
+            try:
+                persona = (state.personality_type or "S").upper()
+                if state.current_node_id in (
+                    "N_Opener_StackingIncomeHook_V3_CreativeTactic",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady",
+                ):
+                    resp_final = _sanitize_opener_response(resp_final, persona=persona)
+                    print("DEBUG: caller_agent_opener_sanitize_fired")
+            except Exception:
+                pass
+
+            # Speak the objection response
+            await self.session.say(resp_final)
+            logging.info(f"Agent said objection response: '{resp_final}'")
+
+            # Opener-specific: immediate route without speaking next node script
+            if state.current_node_id == "N_Opener_StackingIncomeHook_V3_CreativeTactic":
+                trans_key = self._get_content_based_transition(state.current_node_id, user_input)
+                current_node_def = nodes.get(state.current_node_id) or {}
+                trans_map = current_node_def.get("transitions", {}) or {}
+                priority = []
+                if trans_key:
+                    priority.append(trans_key)
+                priority.extend([
+                    "not_interested",
+                    "no_time",
+                    "objection_or_callback_request",
+                    "no_recall",
+                    "question",
+                    "permission_granted",
+                    "default",
+                ])
+                for key in priority:
+                    if key in trans_map:
+                        state.conversation_context["suppress_next_say"] = True
+                        await self._transition_to_node(trans_map[key])
+                        return
+                # If no transition found, fall back to normal objection wait
+                state.waiting_for_objection_response = True
+                return
+
+            # Non-opener: wait for user response on same node
+            state.waiting_for_objection_response = True
+            return
+        except Exception as e:
+            logging.error(f"_handle_objection bridge error: {e}", exc_info=True)
+            # As a fallback, avoid breaking the session; try to keep flow moving
+            try:
+                resp = finalize_agent_text(state, "Understood. Let's keep momentum.", is_objection=True)
+                await self.session.say(resp)
+            except Exception:
+                pass
+            state.waiting_for_objection_response = True
+            return
+
+    async def _handle_user_response(self, user_input: str, state: CallFlowState):
+        """
+        Handle user response with enhanced features
+        
+        Args:
+            user_input (str): The user's response
+            state (CallFlowState): The current conversation state
+        """
+        try:
+            # If we were waiting for an objection response, check if the goal is now achieved
+            if state.waiting_for_objection_response:
+                state.waiting_for_objection_response = False # Reset the flag
+                state.node_goal_achieved = self._check_goal_achievement(state.current_node_id, user_input)
+
+                if not state.node_goal_achieved:
+                    state.objection_loop_counter += 1
+                    # If user responds with another objection, handle it
+                    if self._contains_objection(user_input):
+                        if state.objection_loop_counter > 2: # Prevent infinite loops
+                            logging.warning("Objection loop detected, transitioning to fallback.")
+                            next_node_id = self._fallback_transition(state, user_input)
+                            if next_node_id:
+                                await self._transition_to_node(next_node_id)
+                            return
+                        else:
+                            # Handle the new objection
+                            await self._handle_objection(user_input, state)
+                            return
+                    else:
+                        # Re-engage the user on the same topic
+                        re_engagement_prompt = f"I understand, but just to be clear, {nodes[state.current_node_id]['script']}"
+                        await self.session.say(re_engagement_prompt)
+                        state.waiting_for_objection_response = True # Wait for another response
+                        return
+                else:
+                    state.objection_loop_counter = 0 # Reset loop counter
+
+            # Cancel dead air detection when user responds (disabled)
+            # self._cancel_dead_air_detection()
+            
+            # If we don't have user input and STT is not available, simulate input
+            if not user_input and (not hasattr(self.session, 'stt') or self.session.stt is None):
+                logging.warning("No user input received and STT is not available. Simulating user response.")
+                user_input = "Yes"  # Default response
+            
+            # Add user input to conversation history
+            state.conversation_history.append({
+                'speaker': 'user',
+                'text': user_input,
+                'timestamp': time.time(),
+                'node_id': state.current_node_id,
+                'personality_type': state.personality_type,
+                'emotional_state': state.emotional_state,
+                'sentiment_score': state.conversation_context.get('sentiment', {}).get('score', 0.0)
+            })
+            
+            # Track user questions and interests for personalization
+            self._track_user_preferences(state, user_input)
+            
+            # Inline company-intent handler at IntroduceModel: speak ack+KB snippet and immediately move to KB node
+            try:
+                if state.current_node_id in (
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Dominant",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Influential",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Conscientious",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_HighEngagement",
+                ) and self._is_company_intent(user_input) and not state.waiting_for_objection_response:
+                    logging.info("kb_inline_used=True at IntroduceModel; composing concise company overview and forcing KB transition")
+                    persona = (state.personality_type or "S").upper()
+                    # Try persona-specific snippet; fallback to persona=None; then generic
+                    snippet_obj = get_concise_snippet(node_id="KB_QA", topic="company", persona_or_none=persona, seed_keys=(state.customer_name or "", "company", persona)) \
+                                  or get_concise_snippet(node_id="KB_QA", topic="company", persona_or_none=None, seed_keys=(state.customer_name or "", "company", persona)) \
+                                  or get_concise_snippet(node_id="KB_QA", topic="general", persona_or_none=None, seed_keys=(state.customer_name or "", "general", persona))
+                    snippet_text = (snippet_obj or {}).get("text") or "We help people build and rank simple websites that generate leads businesses pay for."
+                    ack = "Totally fair."
+                    inline_line = f"{ack} {snippet_text}".strip()
+                    inline_line = finalize_agent_text(state, inline_line, is_objection=False)
+                    await self.session.say(inline_line)
+                    # Force KB node to speak immediately by bypassing gating this turn
+                    state.conversation_context["force_kb_once"] = True
+                    state.conversation_context["kb_inline_used"] = True
+                    await self._transition_to_node("N_KB_Q&A_With_StrategicNarrative_V3_Adaptive")
+                    return
+            except Exception as e:
+                logging.error(f"Inline company-intent handler error: {e}", exc_info=True)
+            # Record analytics for user turn
+            conversation_analytics.record_turn('user', user_input)
+            conversation_analytics.record_personality(state.personality_type or 'S')
+            conversation_analytics.record_emotional_state(state.emotional_state or 'neutral')
+            
+            # Update conversation context with summary
+            state.conversation_context['summary'] = self._summarize_conversation_context(state)
+            
+            # Update qualification status based on user input
+            self._update_qualification_status(state, user_input)
+            
+            # 1. Analyze sentiment
+            sentiment_score = self._analyze_sentiment(user_input)
+
+            # Early objection loop management at IntroduceModel: treat callback asks as objection
+            try:
+            # Inline company-intent responder at IntroduceModel: ack+concise snippet, then force KB transition immediately
+            try:
+                if state.current_node_id in ("N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                                             "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady"):
+                    if self._is_company_intent(user_input):
+                        logging.info("kb_inline_company_intent=True at IntroduceModel; composing concise snippet and forcing KB.")
+                        persona = (state.personality_type or "S").upper()
+                        seed = (state.thread_id or "thread", state.current_node_id, "company_intro")
+                        snippet_obj = None
+                        try:
+                            # Prefer persona-specific concise snippet for company intro
+                            snippet_obj = get_concise_snippet(node_id="KB_QA", topic="company_intro", persona_or_none=persona, seed_keys=seed)
+                        except Exception:
+                            try:
+                                # Fallback to persona-agnostic general snippet
+                                snippet_obj = get_concise_snippet(node_id="KB_QA", topic="general", persona_or_none=None, seed_keys=seed)
+                            except Exception:
+                                snippet_obj = None
+                        snippet_text = snippet_obj["text"] if isinstance(snippet_obj, dict) and "text" in snippet_obj else "We run a training and support program that teaches rank-and-bank digital real estate. Thousands of students use it today."
+                        ack = "Totally. Quick context on the company: "
+                        inline_msg = f"{ack}{snippet_text}"
+                        inline_msg = finalize_agent_text(state, inline_msg, is_objection=False)
+                        await self.session.say(inline_msg)
+                        logging.info(f"Agent said inline KB snippet: {inline_msg!r}")
+                        # Force KB once: bypass gating and speak KB script immediately after transition
+                        state.conversation_context["force_kb_once"] = True
+                        # Also, ensure we do not expect a reply before the forced transition
+                        await self._transition_to_node("N_KB_Q&A_With_StrategicNarrative_V3_Adaptive")
+                        return
+            except Exception as e:
+                logging.error(f"inline_kb_company_intent_error: {e}", exc_info=True)
+                if state.current_node_id in ("N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                                             "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady"):
+                    uil = user_input.lower().strip()
+                    cb_list = [
+                        "call me back", "can you call back", "ring me later", "call back later",
+                        "call later", "reach me later", "another time", "some other time",
+                        "call back", "call back please", "give me a callback", "just give me a callback",
+                        "text me", "email me", "shoot me a text", "send me an email"
+                    ]
+                    if any(x in uil for x in cb_list) and not state.waiting_for_objection_response:
+                        logging.info("introduce_model_callback_detected -> handling as objection; blocking KB.")
+                        await self._handle_objection(user_input, state)
+                        return
+            except Exception:
+                pass
+            
+            # Update emotional state based on sentiment
+            if sentiment_score > 0.3:
+                state.emotional_state = "positive"
+            elif sentiment_score < -0.3:
+                state.emotional_state = "negative"
+            else:
+                state.emotional_state = "neutral"
+                
+            logging.info(f"Analyzed user sentiment as: {state.emotional_state} (score: {sentiment_score})")
+            
+            # Store in conversation context
+            state.conversation_context['sentiment'] = {
+                'score': sentiment_score,
+                'emotional_state': state.emotional_state
+            # Inline KB handoff from IntroduceModel when user expresses company intent
+            try:
+                if state.current_node_id in (
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Dominant",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Influential",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Conscientious",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_HighEngagement",
+                ) and self._is_company_intent(user_input):
+                    # Compose a concise acknowledgment + company snippet (≤2 sentences)
+                    persona_code = (state.personality_type or "S").upper()
+                    snippet = None
+                    try:
+                        snippet = get_concise_snippet(
+                            node_id="KB_QA",
+                            topic="company_overview",
+                            persona_or_none=persona_code,
+                            seed_keys=(state.thread_id or "thread", state.customer_name or "user", "intro_company_inline"),
+                            max_chars=120,
+                            max_sents=2,
+                        )
+                    except Exception:
+                        snippet = None
+
+                    base_ack = "Gotcha."
+                    if state.emotional_state == "positive":
+                        base_ack = "Totally."
+                    elif state.emotional_state == "negative":
+                        base_ack = "I hear you."
+
+                    kb_blurb = snippet["text"] if isinstance(snippet, dict) and snippet.get("text") else "Quick backdrop: we’ve helped a lot of everyday folks spin up simple local-lead sites and route the calls to real businesses for monthly checks."
+
+                    inline_msg = f"{base_ack} {kb_blurb}"
+                    inline_msg = finalize_agent_text(state, inline_msg, is_objection=False)
+                    await self.session.say(inline_msg)
+                    logging.info({"kb_inline_used": True, "node": state.current_node_id, "persona": persona_code})
+
+                    # Force immediate KB node speak this turn (bypass gating)
+                    state.conversation_context["force_kb_once"] = True
+                    await self._transition_to_node("N_KB_Q&A_With_StrategicNarrative_V3_Adaptive")
+                    return
+            except Exception as e:
+                logging.error(f"Inline KB handoff error: {e}", exc_info=True)
+            }
+            
+            # 2. Classify user personality if not already done
+            if not state.personality_type:
+                try:
+                    disc_profile = self.disc_classifier.classify_with_sentiment(user_input, sentiment_score)
+                    state.personality_type = disc_profile.type
+                    logging.info(f"Classified user personality as: {disc_profile.type} (confidence: {disc_profile.confidence})")
+                    
+                    # Store in conversation context
+                    state.conversation_context['personality_profile'] = {
+                        'type': disc_profile.type,
+                        'confidence': disc_profile.confidence,
+                        'indicators': disc_profile.indicators
+                    }
+                except Exception as e:
+            # Inline company-intent KB responder at IntroduceModel-family: speak concise ack+KB snippet, then force-transition to KB node
+            try:
+                if state.current_node_id in (
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Dominant",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Influential",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Conscientious",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_HighEngagement",
+                ) and self._is_company_intent(user_input) and not state.waiting_for_objection_response:
+                    logging.info("KB_INLINE: company-intent detected at IntroduceModel; composing concise snippet and forcing KB transition.")
+                    # Pull a concise snippet (<=2 sents) from KB concise store; fall back to a safe one-liner
+                    snippet_obj = None
+                    try:
+                        persona_for_kb = (state.personality_type or None)
+                        seed = (state.thread_id or "thread", "KB_INLINE", state.current_node_id)
+                        snippet_obj = get_concise_snippet(node_id="KB_QA", topic="general", persona_or_none=persona_for_kb, seed_keys=seed)
+                    except Exception as e:
+                        logging.error(f"KB_INLINE: get_concise_snippet error: {e}", exc_info=False)
+                    snippet_text = (snippet_obj or {}).get("text") or "Quick version: we teach and support a rank-and-bank model people use to generate local leads and passive income."
+                    # Keep to two sentences max and sanitize artifacts
+                    ack = "Totally, happy to give you quick context on us."
+                    inline_msg = f"{ack} {snippet_text}"
+                    inline_msg = finalize_agent_text(state, inline_msg, is_objection=False)
+                    await self.session.say(inline_msg)
+                    # Structured flags for logging and KB bypass
+                    state.conversation_context["kb_inline_used"] = True
+                    state.conversation_context["force_kb_once"] = True
+                    logging.info("KB_INLINE: kb_inline_used=true, force_kb_once=true; transitioning to KB node now without waiting.")
+                    await self._transition_to_node("N_KB_Q&A_With_StrategicNarrative_V3_Adaptive")
+                    return
+            except Exception as e:
+                logging.error(f"KB_INLINE path failed: {e}", exc_info=True)
+                    logging.error(f"Error classifying user personality: {e}", exc_info=True)
+<![CDATA[
+            # Inline KB route from IntroduceModel when user asks about company/legitimacy
+            try:
+                if state.current_node_id in (
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady",
+                ) and self._is_company_intent(user_input):
+                    logging.info("kb_inline_used=true path=IntroduceModel company_intent detected")
+                    # Compose concise snippet (≤ 2 sentences); fall back to a safe one-liner if KB empty
+                    snippet = None
+                    try:
+                        persona = (state.personality_type or "S").upper()
+                        snippet = get_concise_snippet(
+                            node_id="KB_QA",
+                            topic="company",
+                            persona_or_none=persona,
+                            seed_keys=(state.thread_id, "company"),
+                            max_sents=2
+                        )
+                    except Exception:
+                        snippet = None
+                    snippet_text = (snippet.get("text") if isinstance(snippet, dict) else "") or \
+                        "Quick context on us: we help people build rank-and-rent websites and turn the leads into reliable income."
+                    # Light ack for S/I; shorter for D/C. Finalizer will sanitize.
+                    ack_prefix = "Totally—" if persona in ("S", "I") else ""
+                    say_text = finalize_agent_text(state, f"{ack_prefix}{snippet_text}", is_objection=False)
+                    await self.session.say(say_text)
+
+                    # Force immediate transition to KB and bypass gating once
+                    state.conversation_context["force_kb_once"] = True
+                    logging.info("kb_forced_transition=true")
+                    await self._transition_to_node("N_KB_Q&A_With_StrategicNarrative_V3_Adaptive")
+                    return
+            except Exception as e:
+                logging.error(f"inline_kb_route_error: {e}", exc_info=True)
+]]>
+                    # Continue with default personality type
+                    state.personality_type = "S"  # Default to Steady
+<![CDATA[            
+            # Inline KB company-intent path at IntroduceModel: speak concise context then immediately transition
+            try:
+                if state.current_node_id in (
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                    "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady",
+                ) and self._is_company_intent(user_input):
+                    logging.info("kb_inline_used=True; company-intent detected at IntroduceModel; speaking concise context and forcing KB transition")
+                    # Build concise ack + KB snippet (<= 2 sentences)
+                    try:
+                        kb_prompt = (
+                            "User asked about the company and legitimacy. Provide 1-2 short sentences, "
+                            "conversational, on what we do and one credibility signal. Avoid URLs or citations."
+                        )
+                        kb_raw = self.kb_processor.query(kb_prompt)
+                    except Exception as e:
+                        logging.error(f"KB inline query failed: {e}", exc_info=False)
+                        kb_raw = (
+                            "We help people build and rank simple websites that generate leads for local businesses. "
+                            "We've trained thousands of students and share real case studies."
+                        )
+                    parts = _sentence_split(kb_raw or "")
+                    kb_snippet = ". ".join([p.rstrip(".") for p in parts[:2]])
+                    if kb_snippet and not kb_snippet.endswith("."):
+                        kb_snippet += "."
+                    ack_prefix = "Fair question—quick context on us: "
+                    inline_msg = finalize_agent_text(state, ack_prefix + (kb_snippet or ""), is_objection=False)
+                    await self.session.say(inline_msg)
+                    # Force KB transition next and bypass gating once
+                    state.conversation_context["force_kb_once"] = True
+                    await self._transition_to_node("N_KB_Q&A_With_StrategicNarrative_V3_Adaptive")
+                    return
+            except Exception as e:
+                logging.error(f"Inline KB company-intent path error: {e}", exc_info=True)
+]]>
+            
+            # 2. Check for objections
+            if self._contains_objection(user_input) and not state.waiting_for_objection_response:
+                logging.info("Recorded objection ")
+                try:
+                    # Get sentiment score from context
+                    sentiment_score = state.conversation_context.get('sentiment', {}).get('score', 0.0)
+                    emotional_state = state.emotional_state or "neutral"
+
+                    # Categorize via handler; obtain both name and value for compatibility
+                    objection_type_enum = self.objection_handler.categorize_objection(user_input, sentiment_score)
+                    objection_type_str = getattr(objection_type_enum, "name", str(objection_type_enum))
+                    objection_category = getattr(objection_type_enum, "value", str(objection_type_enum))
+
+                    # Record objection in analytics
+                    conversation_analytics.record_objection()
+
+                    # Use new API to handle objection; returns ObjectionResponse
+                    logging.debug(f"OBJECTION_BRIDGE: node={state.current_node_id} type={objection_type_str} cat={objection_category} tid={state.thread_id}")
+                    response_obj = self.objection_handler.handle_objection(
+                        thread_id=state.thread_id,
+                        node_id=state.current_node_id,
+                        objection_category=objection_category,
+                        objection_type=objection_type_str,
+                        user_utterance=user_input
+                    )
+                    response = response_obj.response
+                    continue_handling = bool(response_obj.context_updated)
+
+                    # If part of a PSP sequence, prepare for follow-up
+                    try:
+                        if continue_handling and hasattr(self.objection_handler, "early_dismissal_psps"):
+                            if response in [psp["turn_1"] for psp in getattr(self.objection_handler, "early_dismissal_psps", {}).values()]:
+                                state.conversation_context['pending_psp_followup'] = response
+                    except Exception:
+                        pass
+
+                    # Finalize objection response; preserve opener invariants
+                    resp_final = finalize_agent_text(state, response or "", is_objection=True)
+                    try:
+                        persona = (state.personality_type or "S").upper()
+                        if state.current_node_id in ("N_Opener_StackingIncomeHook_V3_CreativeTactic",
+                                                     "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+                                                     "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady"):
+                            resp_final = _sanitize_opener_response(resp_final, persona=persona)
+                            print("DEBUG: caller_agent_opener_sanitize_fired")
+                    except Exception:
+                        pass
+
+                    await self.session.say(resp_final)
+                    logging.info(f"Agent said objection response: '{resp_final}'")
+
+                    # Opener-specific: immediately route, but DO NOT speak next-node script in same turn.
+                    if state.current_node_id == "N_Opener_StackingIncomeHook_V3_CreativeTactic":
+                        # Compute content-based transition key and perform transition now
+                        trans_key = self._get_content_based_transition(state.current_node_id, user_input)
+                        current_node_def = nodes.get(state.current_node_id) or {}
+                        trans_map = current_node_def.get("transitions", {}) or {}
+                        # Strict routing priority for opener objections
+                        priority = []
+                        if trans_key:
+                            priority.append(trans_key)
+                        # Ensure correct mapping for time pressure and callback requests over default/model intro
+                        priority.extend(["not_interested", "no_time", "objection_or_callback_request", "no_recall", "question", "permission_granted", "default"])
+                        for key in priority:
+                            if key in trans_map:
+                                # Suppress speaking the next-node script; only transition state
+                                state.conversation_context["suppress_next_say"] = True
+                                await self._transition_to_node(trans_map[key])
+                                # Do not speak anything else this turn so last_agent_text remains the objection response
+                                return
+                        # If no transitions found, continue to normal processing
+                    else:
+                        # Legacy behavior for non-opener nodes
+                        state.waiting_for_objection_response = True
+                        return  # End the current turn here and wait for user input
+
+                except Exception as e:
+                    logging.error(f"Error handling objection: {e}", exc_info=True)
+                    # Continue with normal processing
+                    pass
+                    
+            # 3. Handle PSP follow-up if needed
+            if 'pending_psp_followup' in state.conversation_context:
+                try:
+                    follow_up_response = self.objection_handler.get_follow_up_response(
+                        state.conversation_context['pending_psp_followup'],
+                        state.personality_type
+                    )
+                    del state.conversation_context['pending_psp_followup']
+                    
+                    # Speak the follow-up response (finalized)
+                    follow_up_response = finalize_agent_text(state, follow_up_response, is_objection=True)
+                    await self.session.say(follow_up_response)
+                    logging.info(f"Agent said PSP follow-up response: '{follow_up_response}'")
+                    
+                    # For PSP follow-ups, we'll use a simple transition logic
+                    # In a real implementation, this would be more sophisticated
+                    current_node = nodes.get(state.current_node_id)
+                    if current_node and 'default' in current_node.get('transitions', {}):
+                        next_node_id = current_node['transitions']['default']
+                        await self._transition_to_node(next_node_id)
+                    return
+                except Exception as e:
+                    logging.error(f"Error handling PSP follow-up: {e}", exc_info=True)
+                    # Continue with normal processing
+                    pass
+                    
+            # 4. For normal responses, transition to the next node
+            # We'll use a simple transition logic for now
+            # In a real implementation, this would use the LLM to determine the appropriate transition
+            current_node = nodes.get(state.current_node_id)
+            if current_node:
+                # Check for content-based transition first (highest priority)
+                content_transition = self._get_content_based_transition(state.current_node_id, user_input)
+                
+                # If we have a content-based transition, use it immediately
+                if content_transition:
+                    try:
+                        if content_transition in current_node.get('transitions', {}):
+                            next_node_id = current_node['transitions'][content_transition]
+                            await self._transition_to_node(next_node_id)
+                            return
+                        # If the content transition is not in the current node's transitions,
+                        # continue with normal processing
+                    except Exception as e:
+                        logging.error(f"Error during content-based transition: {e}", exc_info=True)
+                        # Continue with normal processing
+                
+                # Check for context-based transition second
+                context_transition = None
+                # Check for high engagement based on positive sentiment and detailed responses
+                if (state.emotional_state == "positive" and
+                    len(user_input.split()) > 10 and
+                    'context_high_engagement' in current_node.get('transitions', {})):
+                    context_transition = current_node['transitions']['context_high_engagement']
+                # Check for low engagement based on negative sentiment and short responses
+                elif (state.emotional_state == "negative" and
+                      len(user_input.split()) < 5 and
+                      'context_low_engagement' in current_node.get('transitions', {})):
+                    context_transition = current_node['transitions']['context_low_engagement']
+                
+                # Check for personality-based transition
+                personality_transition = None
+                if state.personality_type:
+                    personality_key = f"personality_{state.personality_type}"
+                    if personality_key in current_node.get('transitions', {}):
+                        personality_transition = current_node['transitions'][personality_key]
+                
+                # Use context transition, then personality transition, then default
+                if context_transition and context_transition in current_node.get('transitions', {}):
+                    next_node_id = current_node['transitions'][context_transition]
+                elif personality_transition and personality_transition in current_node.get('transitions', {}):
+                    next_node_id = current_node['transitions'][personality_transition]
+                elif 'default' in current_node.get('transitions', {}):
+                    next_node_id = current_node['transitions']['default']
+                else:
+                    # Fallback: If no default transition, use sophisticated fallback mechanism
+                    next_node_id = self._fallback_transition(state, user_input)
+                    if not next_node_id:
+                        logging.warning(f"No default transition found for node {state.current_node_id}. Staying in current node.")
+                        # Optionally, we could transition to a specific error handling node
+                        # await self._transition_to_node("ERROR_HANDLING_NODE")
+                        return
+                
+                # If we have a transition, execute it
+                if next_node_id:
+                    try:
+                        await self._transition_to_node(next_node_id)
+                        return
+                    except Exception as e:
+                        logging.error(f"Error during node transition: {e}", exc_info=True)
+                        # Try to use fallback mechanism
+                        try:
+                            next_node_id = self._fallback_transition(state, user_input)
+                            if next_node_id:
+                                await self._transition_to_node(next_node_id)
+                                return
+                            else:
+                                logging.error("Fallback transition failed. Ending conversation.")
+                                await self.session.close()
+                                return
+                        except Exception as fallback_error:
+                            logging.error(f"Error during fallback transition: {fallback_error}", exc_info=True)
+                            # If all else fails, close the session
+                            await self.session.close()
+                            return
+            
+            # 5. Handle ambiguous responses (only if no other transition was found)
+            if self._is_ambiguous(user_input):
+                try:
+                    response = self.tactical_responder.get_ambiguity_handling_response()
+                    
+                    # Speak the ambiguity response
+                    response = finalize_agent_text(state, response, is_objection=False)
+                    await self.session.say(response)
+                    logging.info(f"Agent said ambiguity response: '{response}'")
+                    
+                    # For ambiguous responses, we'll use a simple transition logic
+                    # In a real implementation, this would be more sophisticated
+                    current_node = nodes.get(state.current_node_id)
+                    if current_node and 'default' in current_node.get('transitions', {}):
+                        next_node_id = current_node['transitions']['default']
+                        await self._transition_to_node(next_node_id)
+                    return
+                except Exception as e:
+                    logging.error(f"Error handling ambiguous response: {e}", exc_info=True)
+                    # Continue with normal processing
+                    pass
+                    
+            # Apply patient listening protocol if needed
+            # In a real implementation, this would check for natural pauses
+            # For now, we'll assume the VAD system handles this
+            
+            # Use tactical response if appropriate
+            # This would be triggered based on conversation context
+        except Exception as e:
+            logging.error(f"Unexpected error in _handle_user_response: {e}", exc_info=True)
+            # Log the error but don't try to recover by restarting the conversation
+            # The session will naturally end if the error is unrecoverable
+
+    def _get_content_based_transition(self, node_id: str, user_input: str) -> Optional[str]:
+        """
+        Determine transition based on content analysis of user input for specific nodes.
+
+        Args:
+            node_id (str): The current node ID
+            user_input (str): The user's response
+
+        Returns:
+            Optional[str]: The transition key if a content-based transition is determined, None otherwise
+        """
+        logging.debug(f"_get_content_based_transition called node_id='{node_id}' user_input='{user_input}'")
+        try:
+            user_input_lower = user_input.lower().strip()
+            current_node = nodes.get(node_id)
+
+            if not current_node:
+                return None
+
+            transitions = current_node.get("transitions", {})
+
+            # Fast-route consent-like signals for opener to IntroduceModel
+            if node_id == "N_Opener_StackingIncomeHook_V3_CreativeTactic":
+                text = user_input_lower
+
+                # Explicit empty or clipped affirmatives act as consent
+                clipped_set = {"", "yeah", "ya", "yep", "ok", "okay", "mm-hmm", "mmhmm", "uh huh", "uh-huh", "sure", "alright"}
+                if text in clipped_set:
+                    logging.info("opener_fast_route_detected=clipped_affirmative -> permission_granted")
+                    if "permission_granted" in transitions:
+                        return "permission_granted"
+                    return "default" if "default" in transitions else None
+
+                # Curiosity pokes treated as consent (route to IntroduceModel, not KB)
+                curiosity_phrases = [
+                    "like what", "what kind of", "how does that even work", "how does it even work",
+                    "how would that work", "how’s that work", "hows that work"
+                ]
+                if any(p in text for p in curiosity_phrases):
+                    logging.info("opener_fast_route_detected=curiosity_poke -> permission_granted")
+                    if "permission_granted" in transitions:
+                        return "permission_granted"
+                    return "default" if "default" in transitions else None
+
+                # Soft trust / legitimacy probes treated as consent (next node handles credibility/context)
+                soft_trust_phrases = [
+                    "is this legit", "is this legitimate", "whats the catch", "what's the catch",
+                    "sounds like a pitch", "this sounds like a pitch", "is this a scam", "is this for real"
+                ]
+                if any(p in text for p in soft_trust_phrases):
+                    logging.info("opener_fast_route_detected=soft_trust_probe -> permission_granted")
+                    if "permission_granted" in transitions:
+                        return "permission_granted"
+                    return "default" if "default" in transitions else None
+
+            # Special handling for N200 node (Work and Income Background)
+            if node_id == "N200_Super_WorkAndIncomeBackground_V3_Adaptive":
+                # PRIORITY 1: Business owner responses
+                # Must filter out past/future tenses (e.g., 'I used to own...', 'I plan to start...')
+                business_owner_indicators = [
+                    "run my own business", "own my own business", "i'm an entrepreneur",
+                    "i have my own business", "i'm self-employed", "i'm a business owner",
+                    "i operate my own business", "i manage my own business"
+                ]
+                
+                # Check for business owner indicators that aren't in past/future context
+                is_business_owner = any(indicator in user_input_lower for indicator in business_owner_indicators) and \
+                                   not any(past_indicator in user_input_lower for past_indicator in ["used to", "was", "were", "had", "will", "going to", "plan to"])
+                
+                if is_business_owner and "business_owner" in transitions:
+                    return "business_owner"
+                
+                # PRIORITY 2: Employed responses
+                # Must filter out unemployment indicators
+                employed_indicators = [
+                    "have a job", "i work at", "i'm a", "get a paycheck", "working for someone",
+                    "i'm employed", "i work for", "i'm on salary"
+                ]
+                
+                unemployment_indicators = [
+                    "unemployed", "laid off", "lost my job", "between jobs", "not working",
+                    "looking for work", "job hunting", "no job", "between positions", "looking for a new",
+                    "but not for long", "not for long"
+                ]
+                
+                # Check if user mentions employment but also indicates job searching
+                has_employed_indicators = any(indicator in user_input_lower for indicator in employed_indicators)
+                has_unemployment_indicators = any(indicator in user_input_lower for indicator in unemployment_indicators)
+                
+                # If user mentions both employment and job searching, treat as unemployed
+                if has_employed_indicators and has_unemployment_indicators:
+                    if "unemployed" in transitions:
+                        return "unemployed"
+                
+                # Otherwise, check normal employment status
+                is_employed = has_employed_indicators and not has_unemployment_indicators
+                
+                if is_employed and "employed" in transitions:
+                    return "employed"
+                
+                # PRIORITY 3: Unemployed responses
+                if any(indicator in user_input_lower for indicator in unemployment_indicators) and "unemployed" in transitions:
+                    return "unemployed"
+                
+                # Default to employed if no specific match (maintaining current behavior)
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_Opener_StackingIncomeHook_V3_CreativeTactic node
+            elif node_id == "N_Opener_StackingIncomeHook_V3_CreativeTactic":
+                # Normalize once
+                text = user_input_lower
+
+                # PRIORITY 1: No recall → no_recall
+                no_recall_indicators = [
+                    "i don't recall", "dont recall", "no recall", "doesn't ring a bell",
+                    "doesnt ring a bell", "don't remember", "dont remember", "who are you again"
+                ]
+                if any(ind in text for ind in no_recall_indicators) and "no_recall" in transitions:
+                    return "no_recall"
+
+                # PRIORITY 2: Hard objections that should route to not_interested
+                # Keep this before callback/time/question parsing to avoid misrouting
+                not_interested_indicators = [
+                    "not interested", "no interest", "stop", "no thanks", "no thank you",
+                    "leave me alone", "go away", "dont care", "don't care",
+                    "isn't for me", "isnt for me", "is not for me", "not for me", "this isn't for me", "this isnt for me"
+                ]
+                # Guard against callback/time phrases containing 'stop' etc.
+                if any(ind in text for ind in not_interested_indicators) and not any(
+                    cb in text for cb in ["call me back", "call back", "ring me later", "another time", "some other time", "later"]
+                ) and "not_interested" in transitions:
+                    return "not_interested"
+
+                # PRIORITY 3: Time pressure → no_time
+                no_time_indicators = [
+                    "too busy", "don't have time", "dont have time", "no time",
+                    "i have to go", "gotta go", "have to run", "i need to go",
+                    "i need to run", "i have to leave", "have to leave", "leaving now",
+                    "gotta run", "have to go", "got to run", "gotta bounce", "need to run"
+                ]
+                if any(ind in text for ind in no_time_indicators) and "no_time" in transitions:
+                    return "no_time"
+
+                # PRIORITY 4: Direct opener questions → question
+                # Specific opener-question indicators to avoid generic “what/how” bleed
+                question_indicators = [
+                    "what is this", "what's this", "what is this about", "what's this about",
+                    "tell me more", "what are you talking about", "what are you calling about",
+                    "what is this regarding", "what's this regarding"
+                ]
+                if any(ind in text for ind in question_indicators) and "question" in transitions:
+                    return "question"
+
+                # PRIORITY 5: Callback requests → objection_or_callback_request
+                callback_indicators = [
+                    "call me back", "can you call back", "ring me later", "call back later",
+                    "call later", "reach me later", "another time", "some other time",
+                    "call back", "call back please"
+                ]
+                if any(ind in text for ind in callback_indicators) and "objection_or_callback_request" in transitions:
+                    return "objection_or_callback_request"
+
+                # PRIORITY 6: Permission granted → permission_granted
+                # Must guard against "not interested" false-positive via substring "interested"
+                permission_indicators = [
+                    "yes", "sure", "okay", "ok", "go ahead", "sounds good", "alright", "all right"
+                ]
+                # Avoid matching permission if there is explicit time pressure or callback present
+                time_or_callback_present = any(ind in text for ind in [
+                    "too busy", "don't have time", "dont have time", "no time",
+                    "i have to go", "gotta go", "have to run", "i need to go",
+                    "i need to run", "i have to leave", "have to leave", "leaving now",
+                    "gotta run", "have to go", "got to run", "call me back", "call back", "ring me later", "another time", "some other time"
+                ])
+                if ("interested" in text and "not interested" not in text and not time_or_callback_present and "permission_granted" in transitions):
+                    return "permission_granted"
+                if (any(ind == text or ind in text.split() for ind in ["yes", "sure", "ok", "okay"])
+                    and not time_or_callback_present
+                    and "permission_granted" in transitions):
+                    return "permission_granted"
+                if any(phrase in text for phrase in permission_indicators) and not time_or_callback_present and "permission_granted" in transitions:
+                    return "permission_granted"
+
+                # Fallback: route to default if defined
+                if "default" in transitions:
+                    return "default"
+            
+            
+            # Special handling for N206_AskAboutPartners_IfFinanciallyQualified node
+            elif node_id == "N206_AskAboutPartners_IfFinanciallyQualified":
+                # PRIORITY 1: Partner exists responses
+                partner_indicators = ["yes", "my wife", "my husband", "my business partner", "we make decisions together"]
+                if any(indicator in user_input_lower for indicator in partner_indicators) and "partner" in transitions:
+                    return "partner"
+                
+                # PRIORITY 2: No partner responses
+                no_partner_indicators = ["no", "just me", "i'm the only one", "i make the decisions"]
+                if any(indicator in user_input_lower for indicator in no_partner_indicators) and "no_partner" in transitions:
+                    return "no_partner"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_Obj_EarlyDismiss_AskShareBackground_V7 node
+            elif node_id == "N_Obj_EarlyDismiss_AskShareBackground_V7":
+                # PRIORITY 1: Agreed to hear background (semantic inversion - 'no' means 'yes')
+                # Check for explicit agreement indicators
+                agreed_indicators = ["no", "no i wouldn't", "sure", "okay", "go ahead", "fine", "alright"]
+                if any(indicator in user_input_lower for indicator in agreed_indicators) and "agrees" in transitions:
+                    return "agrees"
+                
+                # PRIORITY 2: Declined to hear background
+                declined_indicators = ["yes", "i do mind", "not interested", "no thanks", "nope", "i don't want to"]
+                if any(indicator in user_input_lower for indicator in declined_indicators) and "declines" in transitions:
+                    return "declines"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N500A_ProposeDeeperDive_V5_Adaptive node
+            elif node_id == "N500A_ProposeDeeperDive_V5_Adaptive":
+                # Look for affirmative responses indicating agreement to schedule
+                affirmative_indicators = ["yes", "sure", "okay", "yep", "sounds good", "let's do it", "that works", "perfect"]
+                if any(indicator in user_input_lower for indicator in affirmative_indicators) and "agrees" in transitions:
+                    return "agrees"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_ConfirmCommitment_FinalCheck_V1_Adaptive node
+            elif node_id == "N_ConfirmCommitment_FinalCheck_V1_Adaptive":
+                # Look for commitment confirmation responses (semantic inversion - 'no' means 'yes')
+                commitment_indicators = ["no", "i'll be there", "no reason", "i'm available", "i'll make it", "count me in"]
+                if any(indicator in user_input_lower for indicator in commitment_indicators) and "committed" in transitions:
+                    return "committed"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_AskCapital_15k_V1_Adaptive node
+            elif node_id == "N_AskCapital_15k_V1_Adaptive":
+                # PRIORITY 1: Has capital responses
+                has_capital_indicators = ["yes", "i do", "i have that", "that's doable", "i can do that", "sure"]
+                if any(indicator in user_input_lower for indicator in has_capital_indicators) and "has_15_25k" in transitions:
+                    return "has_15_25k"
+                
+                # PRIORITY 2: No capital responses
+                no_capital_indicators = ["no", "not that much", "i can't", "don't have that", "not right now"]
+                if any(indicator in user_input_lower for indicator in no_capital_indicators) and "no_15_25k" in transitions:
+                    return "no_15_25k"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_AskCapital_5k_Direct_V1_Adaptive node
+            elif node_id == "N_AskCapital_5k_Direct_V1_Adaptive":
+                # PRIORITY 1: Has capital responses
+                has_capital_indicators = ["yes", "i do", "i can do that", "i have that", "sure", "that's fine"]
+                if any(indicator in user_input_lower for indicator in has_capital_indicators) and "has_5k" in transitions:
+                    return "has_5k"
+                
+                # PRIORITY 2: No capital responses
+                no_capital_indicators = ["no", "i can't do that", "i don't have that", "can't afford", "don't have"]
+                if any(indicator in user_input_lower for indicator in no_capital_indicators) and "no_5k" in transitions:
+                    return "no_5k"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N205C_AskCreditScore_650_V1_FullyTuned node
+            elif node_id == "N205C_AskCreditScore_650_V1_FullyTuned":
+                # PRIORITY 1: Qualified credit score responses
+                qualified_indicators = ["yes", "it's over 650", "700", "720", "good", "excellent", "high"]
+                if any(indicator in user_input_lower for indicator in qualified_indicators) and "score_over_650" in transitions:
+                    return "score_over_650"
+                
+                # PRIORITY 2: Not qualified credit score responses
+                not_qualified_indicators = ["no", "it's under", "600", "bad", "poor", "low"]
+                if any(indicator in user_input_lower for indicator in not_qualified_indicators) and "score_under_650" in transitions:
+                    return "score_under_650"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            
+            # Special handling for N_Obj_RealBusy_BluntCheck_V3_Adaptive node
+            elif node_id == "N_Obj_RealBusy_BluntCheck_V3_Adaptive":
+                # PRIORITY 1: Confirmed meeting responses
+                meeting_indicators = ["meeting", "i really do", "have a meeting", "appointment", "conference call", "have a call", "call soon"]
+                if any(indicator in user_input_lower for indicator in meeting_indicators) and "meeting_coming_up" in transitions:
+                    return "meeting_coming_up"
+                
+                # PRIORITY 2: Value objection responses
+                value_objection_indicators = ["not sure", "don't see the value", "not for me", "not interested", "doesn't make sense", "skeptical"]
+                if any(indicator in user_input_lower for indicator in value_objection_indicators) and "not_sure_why_listening" in transitions:
+                    return "not_sure_why_listening"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_Obj_RealBusy_AskMeetingTime node
+            elif node_id == "N_Obj_RealBusy_AskMeetingTime":
+                # PRIORITY 1: Meeting time vague responses
+                vague_indicators = ["soon", "a bit", "in a while", "coming up", "later"]
+                if any(indicator in user_input_lower for indicator in vague_indicators) and "vague" in transitions:
+                    return "vague"
+                
+                # PRIORITY 2: Meeting time given responses
+                # Look for specific time indicators
+                time_indicators = ["in", "at", "by", "around", "o'clock", "minutes", "hours"]
+                
+                # Check for specific time mentions
+                has_time_indicator = any(indicator in user_input_lower for indicator in time_indicators)
+                
+                # Check for time patterns without using regex
+                has_time_pattern = False
+                # Look for patterns like "5 minutes", "10 minutes", "3 hours", etc.
+                time_units = ["minutes", "hours", "o'clock", "am", "pm"]
+                for unit in time_units:
+                    if unit in user_input_lower:
+                        # Check if there's a number before the unit
+                        unit_index = user_input_lower.find(unit)
+                        # Look for digits before the unit
+                        for i in range(unit_index - 1, -1, -1):
+                            if user_input_lower[i].isdigit():
+                                has_time_pattern = True
+                                break
+                        if has_time_pattern:
+                            break
+                
+                # Also check for "at [number]" pattern
+                if "at" in user_input_lower:
+                    at_index = user_input_lower.find("at")
+                    # Look for digits after "at"
+                    for i in range(at_index + 2, len(user_input_lower)):
+                        if user_input_lower[i].isdigit():
+                            has_time_pattern = True
+                            break
+                
+                if (has_time_indicator or has_time_pattern) and "time_given" in transitions:
+                    return "time_given"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N001A_NameConfirmation_Only node
+            elif node_id == "N001A_NameConfirmation_Only":
+                # PRIORITY 1: Wrong number responses
+                wrong_number_indicators = ["wrong number", "not here", "no john here", "you have the wrong person", "he doesn't live here"]
+                if any(indicator in user_input_lower for indicator in wrong_number_indicators) and "wrong_number" in transitions:
+                    return "wrong_number"
+                
+                # PRIORITY 2: Name confirmed responses (default path)
+                name_confirmed_indicators = ["yes", "yeah", "speaking", "this is he", "this is she", "uh-huh", "okay", "who is this", "what is this regarding"]
+                # For multi-word indicators, we need special handling
+                multi_word_indicators = [indicator for indicator in name_confirmed_indicators if ' ' in indicator]
+                single_word_indicators = [indicator for indicator in name_confirmed_indicators if ' ' not in indicator]
+                
+                # Split user input into words for exact matching of single words
+                user_words = user_input_lower.split()
+                
+                # Check for single word matches
+                has_single_word_match = any(indicator in user_words for indicator in single_word_indicators)
+                
+                # Check for multi-word matches
+                has_multi_word_match = any(indicator in user_input_lower for indicator in multi_word_indicators)
+                
+                # Split user input into words for exact matching of single words
+                user_words = user_input_lower.split()
+                
+                # Check for single word matches
+                has_single_word_match = any(indicator in user_words for indicator in single_word_indicators)
+                
+                # Check for multi-word matches
+                has_multi_word_match = any(indicator in user_input_lower for indicator in multi_word_indicators)
+                
+                if (has_single_word_match or has_multi_word_match) and "default" in transitions:
+                    return "default"
+                
+                # Default transition if no specific match
+                # Removed this line to prevent always returning "default"
+                # if "default" in transitions:
+                #     return "default"
+            
+            # Special handling for N003_NoRecall_PivotAndChallenge_V18_FullyTuned node
+            elif node_id == "N003_NoRecall_PivotAndChallenge_V18_FullyTuned":
+                # PRIORITY 1: Callback requested responses
+                callback_indicators = ["call back", "have to go", "busy", "meeting"]
+                if any(indicator in user_input_lower for indicator in callback_indicators) and "callback_requested" in transitions:
+                    return "callback_requested"
+                
+                # PRIORITY 2: Benefit interest responses
+                benefit_interest_indicators = ["yes", "i am", "sounds interesting", "tell me more", "possibly", "maybe", "what's it about", "interested"]
+                if any(indicator in user_input_lower for indicator in benefit_interest_indicators) and "shows_interest" in transitions:
+                    return "shows_interest"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N201A_Employed_AskYearlyIncome_V8_Adaptive node
+            elif node_id == "N201A_Employed_AskYearlyIncome_V8_Adaptive":
+                # Look for monetary value responses (e.g., "80k a year", "six figures", "$50,000")
+                # This is a simple check for common monetary value patterns
+                monetary_indicators = ["k a year", "figures", "dollars", "thousand", "million", "$", "£", "€"]
+                if any(indicator in user_input_lower for indicator in monetary_indicators) and "default" in transitions:
+                    return "default"
+                
+                # Also check for numeric values that might represent income
+                import re
+                if re.search(r'\d+[kKmM]?', user_input_lower) and "default" in transitions:
+                    return "default"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N202A_AskCurrentMonthlyRevenue_V7_FullyTuned node
+            elif node_id == "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned":
+                # Look for monetary value responses (e.g., "15k a month", "twenty thousand", "$10,000")
+                # This is a simple check for common monetary value patterns
+                monetary_indicators = ["k a month", "thousand", "dollars", "million", "$", "£", "€"]
+                if any(indicator in user_input_lower for indicator in monetary_indicators) and "default" in transitions:
+                    return "default"
+                
+                # Also check for numeric values that might represent revenue
+                import re
+                if re.search(r'\d+[kKmM]?', user_input_lower) and "default" in transitions:
+                    return "default"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N201B_Employed_AskSideHustle_V4_FullyTuned node
+            elif node_id == "N201B_Employed_AskSideHustle_V4_FullyTuned":
+                # PRIORITY 1: Side hustle yes responses
+                yes_indicators = ["yes", "i do", "a little", "sometimes", "occasionally", "freelance", "consulting", "side gig"]
+                if any(indicator in user_input_lower for indicator in yes_indicators) and "yes" in transitions:
+                    return "yes"
+                
+                # PRIORITY 2: Side hustle no responses
+                no_indicators = ["no", "not really", "i don't", "nope", "none", "nothing", "don't have"]
+                if any(indicator in user_input_lower for indicator in no_indicators) and "no" in transitions:
+                    return "no"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N201F_Unemployed_AskSideHustle_V4_FullyTuned node
+            elif node_id == "N201F_Unemployed_AskSideHustle_V4_FullyTuned":
+                # PRIORITY 1: Side hustle yes responses
+                yes_indicators = ["yes", "i did", "sometimes", "occasionally", "freelance", "consulting", "side gig", "yeah"]
+                if any(indicator in user_input_lower for indicator in yes_indicators) and "yes" in transitions:
+                    return "yes"
+                
+                # PRIORITY 2: Side hustle no responses
+                no_indicators = ["no", "not anymore", "nope", "none", "nothing", "don't have", "not really"]
+                if any(indicator in user_input_lower for indicator in no_indicators) and "no" in transitions:
+                    return "no"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N201D_Employed_AskVehicleQ_V5_Adaptive node
+            elif node_id == "N201D_Employed_AskVehicleQ_V5_Adaptive":
+                # Look for affirmative responses indicating belief in the model
+                affirmative_indicators = ["yes", "yeah", "definitely", "i can see that", "makes sense", "i think so", "sure", "absolutely", "i believe i could", "sounds possible"]
+                if any(indicator in user_input_lower for indicator in affirmative_indicators) and "affirms_vehicle" in transitions:
+                    return "affirms_vehicle"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N202C_AskVehicleQuestion_BusinessOwner_V4_Adaptive node
+            elif node_id == "N202C_AskVehicleQuestion_BusinessOwner_V4_Adaptive":
+                # Look for affirmative responses indicating belief in the model
+                affirmative_indicators = ["yes", "yeah", "definitely", "i can see that", "makes sense", "i think so", "sure", "absolutely", "i believe i could", "sounds possible"]
+                if any(indicator in user_input_lower for indicator in affirmative_indicators) and "affirms_vehicle" in transitions:
+                    return "affirms_vehicle"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N201H_Unemployed_AskVehicleQ_V4_FullyTuned node
+            elif node_id == "N201H_Unemployed_AskVehicleQ_V4_FullyTuned":
+                # Look for affirmative responses indicating belief in the model
+                affirmative_indicators = ["yes", "yeah", "definitely", "i can see that", "makes sense", "i think so", "sure", "absolutely", "i believe i could", "sounds possible"]
+                if any(indicator in user_input_lower for indicator in affirmative_indicators) and "affirms_vehicle" in transitions:
+                    return "affirms_vehicle"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            # Special handling for N_KB_Q&A_With_StrategicNarrative_V3_Adaptive node
+            elif node_id == "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive":
+                # Gate: only allow content transitions to KB when explicit company/factual questions present
+                # Here we do not force a transition choice; we leave default behavior if gate is closed
+                try:
+                    # Try to get the latest user text via conversation history (not passed here directly)
+                    # Since this function doesn't receive state, we cannot gate perfectly; gating is enforced in _transition_to_node
+                    pass
+                except Exception:
+                    pass
+                # PRIORITY 1: Financial questions (cost, money, income)
+                financial_indicators = ["cost", "price", "money", "invest", "afford", "income", "make money", "how much"]
+                if any(indicator in user_input_lower for indicator in financial_indicators) and "financial_question" in transitions:
+                    return "financial_question"
+                
+                # PRIORITY 2: Timeline/Speed questions
+                timeline_indicators = ["quickly", "fast", "soon", "when", "how long", "timeline"]
+                if any(indicator in user_input_lower for indicator in timeline_indicators) and "timeline_question" in transitions:
+                    return "timeline_question"
+
+                # PRIORITY 3: General business model questions (already handled by default transition)
+                business_model_indicators = ["how it works", "business model", "explain", "details"]
+                if any(indicator in user_input_lower for indicator in business_model_indicators) and "default" in transitions:
+                    return "default"
+
+                # Default transition if no specific match (e.g., general interest, or the $20k question)
+                # The original node had semantic inversion for the $20k question, but now the LLM handles the direct question.
+                if "default" in transitions:
+                    return "default"
+            
+            
+            # Special handling for Logic_Split_Node_Financial_Qualification node
+            elif node_id == "Logic_Split_Node_Financial_Qualification":
+                # This is a logical branch node that routes users based on income level
+                # High_Income → N_AskCapital_15k_V1_Adaptive
+                # Standard_Income → N_AskCapital_5k_Direct_V1_Adaptive
+                
+                # Get the state to access qualification status
+                # Since this method doesn't have direct access to state, we'll need to make assumptions
+                # based on the user input or implement a different approach
+                
+                # For now, we'll implement a simple logic based on keywords in user input
+                # In a real implementation, this would use the qualification_status from state
+                
+                # High income indicators (simplified implementation)
+                high_income_indicators = ["100k", "100,000", "100 thousand", "eight thousand", "8000", "six figures",
+                                        "150k", "150,000", "200k", "200,000", "high earner", "substantial income"]
+                
+                # Check for high income indicators
+                if any(indicator in user_input_lower for indicator in high_income_indicators) and "high_income" in transitions:
+                    return "high_income"
+                
+                # Default to standard income if no high income indicators found
+                if "standard_income" in transitions:
+                    return "standard_income"
+                
+                # Fallback to default if neither transition is available
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N001B_IntroAndHelpRequest_Only node
+            elif node_id == "N001B_IntroAndHelpRequest_Only":
+                # Any response should trigger the HelpRequest_Responded transition
+                # The reference says "*any*" for trigger keywords
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_IntroduceModel_And_AskQuestions_V3_Adaptive node
+            elif node_id == "N_IntroduceModel_And_AskQuestions_V3_Adaptive":
+                # Any response should trigger the default transition
+                # The reference says "*any*" for trigger keywords
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N003B_DeframeInitialObjection_V7_GoalOriented node
+            elif node_id == "N003B_DeframeInitialObjection_V7_GoalOriented":
+                # Any response should trigger the default transition
+                # The reference says "*any*" for trigger keywords
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_Obj_EarlyDismiss_ShareBackground_DeliverStoryHook_V3_FullyTuned node
+            elif node_id == "N_Obj_EarlyDismiss_ShareBackground_DeliverStoryHook_V3_FullyTuned":
+                # Any response should trigger the default transition
+                # The reference says "*any*" for trigger keywords
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_Obj_EarlyDismiss_ShareBackgroundAskWhy node
+            elif node_id == "N_Obj_EarlyDismiss_ShareBackgroundAskWhy":
+                # Any response should trigger the default transition
+                # The reference says "*any*" for trigger keywords
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_Obj_EarlyDismiss_DirectValueChallenge node
+            elif node_id == "N_Obj_EarlyDismiss_DirectValueChallenge":
+                # Any response should trigger the default transition
+                # The reference says "*any*" for trigger keywords
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_Obj_EarlyDismiss_ExplainReasonAndExplore node
+            elif node_id == "N_Obj_EarlyDismiss_ExplainReasonAndExplore":
+                # Look for responses indicating interest
+                # We need to be careful not to match "not interested" as "interested"
+                interest_indicators = ["yes", "okay", "sounds interesting", "that sounds interesting"]
+                not_interested_indicators = ["not interested", "not really", "still not interested"]
+                
+                # Check if user is not interested first
+                if any(indicator in user_input_lower for indicator in not_interested_indicators) and "default" in transitions:
+                    return "default"
+                
+                # Check for interest indicators
+                if any(indicator in user_input_lower for indicator in interest_indicators) and "still_interested" in transitions:
+                    return "still_interested"
+                
+                # Special case for "interested" - check that it's not part of "not interested"
+                if "interested" in user_input_lower and "not interested" not in user_input_lower and "still_interested" in transitions:
+                    return "still_interested"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N401_AskWhyNow_Initial_V10_AssertiveFrame node
+            elif node_id == "N401_AskWhyNow_Initial_V10_AssertiveFrame":
+                # Look for responses indicating motivation
+                motivation_indicators = ["freedom", "tired of my job", "need more income", "for my family",
+                                       "want to change", "looking for", "ready for something new"]
+                
+                # Look for callback requests
+                callback_indicators = ["have to go", "busy", "call me back", "need to end", "got to run"]
+                
+                # Check for motivation provided first
+                if any(indicator in user_input_lower for indicator in motivation_indicators) and "motivation_provided" in transitions:
+                    return "motivation_provided"
+                
+                # Check for callback requested
+                if any(indicator in user_input_lower for indicator in callback_indicators) and "callback_requested" in transitions:
+                    return "callback_requested"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N402_Compliment_And_AskYouKnowWhy_V5_FullyTuned node
+            elif node_id == "N402_Compliment_And_AskYouKnowWhy_V5_FullyTuned":
+                # Any response should trigger the Responded_To_Hook transition
+                # The reference says "*any*" for trigger keywords
+                # Also check for callback requests
+                callback_indicators = ["have to go", "busy", "call me back", "need to end", "got to run"]
+                
+                # Check for callback requested first
+                if any(indicator in user_input_lower for indicator in callback_indicators) and "callback_requested" in transitions:
+                    return "callback_requested"
+                
+                # Default to responded to hook for any other response
+                if "responded_to_hook" in transitions:
+                    return "responded_to_hook"
+                
+                # Fallback to default
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N403_IdentityAffirmation_And_ValueFitQuestion_V8_GoalAligned node
+            elif node_id == "N403_IdentityAffirmation_And_ValueFitQuestion_V8_GoalAligned":
+                # Look for responses confirming value fit
+                confirmation_indicators = ["yes", "it does", "sounds like it", "that's what i'm looking for",
+                                         "exactly what i'm looking for", "perfect", "absolutely", "definitely"]
+                
+                # Look for callback requests
+                callback_indicators = ["have to go", "i have to go", "busy", "call me back", "need to end", "got to run"]
+                
+                # Check for callback requested first
+                if any(indicator in user_input_lower for indicator in callback_indicators) and "callback_requested" in transitions:
+                    return "callback_requested"
+                
+                # Check for value confirmed
+                if any(indicator in user_input_lower for indicator in confirmation_indicators) and "fits" in transitions:
+                    return "fits"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N500A_ProposeDeeperDive_V5_Adaptive node
+            elif node_id == "N500A_ProposeDeeperDive_V5_Adaptive":
+                # Look for responses indicating agreement to schedule
+                agreement_indicators = ["yes", "sure", "okay", "yep", "sounds good", "let's do it",
+                                      "that works", "perfect", "absolutely", "definitely", "i'm in"]
+                
+                # Check for agreement to schedule
+                if any(indicator in user_input_lower for indicator in agreement_indicators) and "agreed_to_schedule" in transitions:
+                    return "agreed_to_schedule"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N500B_AskTimezone_V2_FullyTuned node
+            elif node_id == "N500B_AskTimezone_V2_FullyTuned":
+                # Look for responses indicating timezone
+                timezone_indicators = ["pacific", "eastern", "mountain", "central", "pst", "est", "cst", "mst",
+                                     "california", "new york", "texas", "florida", "colorado", "arizona",
+                                     "gmt", "utc", "london", "paris", "tokyo", "sydney"]
+                
+                # Check for timezone provided
+                if any(indicator in user_input_lower for indicator in timezone_indicators) and "timezone_provided" in transitions:
+                    return "timezone_provided"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_AskForCallbackRange_V1_Adaptive node
+            elif node_id == "N_AskForCallbackRange_V1_Adaptive":
+                # Look for responses indicating time range
+                time_indicators = ["morning", "afternoon", "evening", "night", "am", "pm",
+                                 "between", "from", "to", "until", "before", "after",
+                                 "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+                                 "weekend", "weekday", "today", "tomorrow"]
+                
+                # Check for range provided
+                if any(indicator in user_input_lower for indicator in time_indicators) and "range_provided" in transitions:
+                    return "range_provided"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_Scheduling_AskTime_V2_SmartAmbiguity node
+            elif node_id == "N_Scheduling_AskTime_V2_SmartAmbiguity":
+                # Look for responses indicating specific time
+                time_indicators = ["am", "pm", "o'clock", "noon", "midnight",
+                                 "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+                                 "today", "tomorrow", "next week", "this week"]
+                
+                # Check for time provided
+                if any(indicator in user_input_lower for indicator in time_indicators) and "time_provided" in transitions:
+                    return "time_provided"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_ConfirmVideoCallEnvironment_V1_Adaptive node
+            elif node_id == "N_ConfirmVideoCallEnvironment_V1_Adaptive":
+                # Look for responses confirming environment
+                confirmation_indicators = ["yes", "sure", "okay", "that works", "i can do that",
+                                         "absolutely", "definitely", "no problem", "sounds good"]
+                
+                # Check for environment confirmed
+                if any(indicator in user_input_lower for indicator in confirmation_indicators) and "confirmed" in transitions:
+                    return "confirmed"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_Scheduling_RescheduleAndHandle_V5_FullyTuned node
+            elif node_id == "N_Scheduling_RescheduleAndHandle_V5_FullyTuned":
+                # Look for responses indicating time booked successfully
+                success_indicators = ["great", "perfect", "sounds good", "works for me", "that's fine",
+                                    "i'm available", "i can make it", "that works"]
+                
+                # Look for responses indicating time unavailable
+                unavailable_indicators = ["not available", "unavailable", "conflict", "busy", "taken",
+                                        "booked", "not free", "no good"]
+                
+                # Look for responses where user picks new time
+                new_time_indicators = ["how about", "what about", "is x available", "can we do",
+                                     "what time", "when can", "alternative"]
+                
+                # Look for hostile responses or end call indicators
+                hostile_indicators = ["no", "nevermind", "forget it", "not interested", "don't call",
+                                    "stop calling", "go away", "leave me alone"]
+                
+                # Check for hostile or end call first
+                if any(indicator in user_input_lower for indicator in hostile_indicators) and "hostile_or_end_call" in transitions:
+                    return "hostile_or_end_call"
+                
+                # Check for user picks new time
+                if any(indicator in user_input_lower for indicator in new_time_indicators) and "user_picks_new_time" in transitions:
+                    return "user_picks_new_time"
+                
+                # Check for time unavailable
+                if any(indicator in user_input_lower for indicator in unavailable_indicators) and "time_unavailable" in transitions:
+                    return "time_unavailable"
+                
+                # Check for time booked successfully
+                if any(indicator in user_input_lower for indicator in success_indicators) and "new_time_found" in transitions:
+                    return "new_time_found"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N206_AskAboutPartners_IfFinanciallyQualified node
+            elif node_id == "N206_AskAboutPartners_IfFinanciallyQualified":
+                # Look for responses indicating partner exists
+                partner_indicators = ["yes", "my wife", "my husband", "my business partner", "spouse",
+                                    "partner", "husband", "wife", "colleague", "team", "we", "us"]
+                
+                # Look for responses indicating no partner
+                no_partner_indicators = ["no", "just me", "no one", "myself", "alone", "by myself",
+                                       "single", "individual", "only me", "on my own"]
+                
+                # Check for partner exists first
+                if any(indicator in user_input_lower for indicator in partner_indicators) and "partner_exists" in transitions:
+                    return "partner_exists"
+                
+                # Check for no partner
+                if any(indicator in user_input_lower for indicator in no_partner_indicators) and "no_partner" in transitions:
+                    return "no_partner"
+                
+                # Default transition if no specific match
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N018_ConfirmPartnerAvailability node
+            elif node_id == "N018_ConfirmPartnerAvailability":
+                logging.debug(f"N018_ConfirmPartnerAvailability input='{user_input}'")
+                # Look for responses indicating partner is available
+                available_indicators = ["we can both be there", "that works for us", "she'll be there", "he's free", "works for us", "i'm the decision maker", "yes"]
+                
+                # Look for responses indicating partner is not available
+                not_available_indicators = ["that won't work for my partner", "she can't", "he's busy", "no"]
+                
+                # Look for responses indicating uncertainty about partner's schedule
+                unsure_indicators = ["i don't know her schedule", "i'll have to check with him", "i don't know", "i'll have to check", "i'm not sure"]
+                
+                # Debug print statements
+                logging.debug(f"N018 details user_input={user_input_lower} transitions={list(transitions.keys())}")
+                
+                # Check for partner schedule uncertain first (multi-word phrases first)
+                logging.debug("N018: checking unsure indicators")
+                if any(indicator in user_input_lower for indicator in unsure_indicators) and "unsure" in transitions:
+                    logging.debug("N018: matched unsure")
+                    return "unsure"
+                
+                # Check for partner not available (multi-word phrases first)
+                logging.debug("N018: checking not_available indicators")
+                if any(indicator in user_input_lower for indicator in not_available_indicators) and "not_available" in transitions:
+                    logging.debug("N018: matched not_available")
+                    return "not_available"
+                
+                # Check for partner available (multi-word phrases first)
+                logging.debug("N018: checking available indicators")
+                if any(indicator in user_input_lower for indicator in available_indicators) and "available" in transitions:
+                    logging.debug("N018: matched available")
+                    return "available"
+                
+                # Default transition if no specific match
+                logging.debug("N018: checking default transition")
+                if "default" in transitions:
+                    logging.debug("N018: using default")
+                    return "default"
+            
+            # Special handling for N017D_SuggestPartnerCheck_ScheduleFollowUpCall node
+            elif node_id == "N017D_SuggestPartnerCheck_ScheduleFollowUpCall":
+                # Any response should trigger the default transition
+                # The reference says "*any*" for trigger keywords
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_AskAboutReminderSetup_V1_Adaptive node
+            elif node_id == "N_AskAboutReminderSetup_V1_Adaptive":
+                # Any response should trigger the default transition
+                # The reference says "*any*" for trigger keywords
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_Finalize_And_EndCall_V1_Adaptive node
+            elif node_id == "N_Finalize_And_EndCall_V1_Adaptive":
+                # Any response should trigger the default transition
+                # The reference says "*any*" for trigger keywords
+                if "default" in transitions:
+                    return "default"
+            
+            # Special handling for N_EndCall_Final_V2_Decisive node
+            elif node_id == "N_EndCall_Final_V2_Decisive":
+                # Any response should trigger the default transition
+                # The reference says "*any*" for trigger keywords
+                if "default" in transitions:
+                    return "default"
+            
+            # Add content-based transition logic for other nodes as needed
+            # ...
+            
+            return None
+        except Exception as e:
+            logging.error(f"Error in _get_content_based_transition: {e}", exc_info=True)
+            return None
+
+    def _generate_dynamic_kb_qa_script(self, state: CallFlowState) -> str:
+        """
+        Generate a dynamic script for the N_KB_Q&A_With_StrategicNarrative_V3_Adaptive node
+        based on user data, conversation context, and knowledge base queries.
+        
+        Args:
+            state (CallFlowState): The current conversation state
+            
+        Returns:
+            str: The dynamically generated script
+        """
+        try:
+            # Get user data for personalization
+            customer_name = state.customer_name or "there"
+            personality_type = state.personality_type or "S"
+            engagement_level = state.qualification_status.get('engagement_level', 5)
+            expressed_interests = state.user_preferences.get('interests', [])
+            
+            # Check if income data is available (collected in N200 and subsequent nodes)
+            employment_status = state.user_preferences.get('employment_status')
+            income_level = state.user_preferences.get('income_level')
+            has_income_data = employment_status is not None and income_level is not None
+            
+            # Query KB based on user interests and conversation history
+            kb_response = self._query_knowledge_base(expressed_interests, state.conversation_history)
+            
+            # Generate income potential statement
+            if has_income_data:
+                # Generate dynamic income figures based on user's financial situation
+                dynamic_income_range = self._calculate_dynamic_income_range(income_level, employment_status, engagement_level)
+                # Generate income potential statement with dynamic figures
+                income_statement = self._generate_income_statement(dynamic_income_range, employment_status, income_level)
+            else:
+                # Use generic income statement when income data is not available yet
+                income_statement = "Many of our students have been able to generate significant income - we've seen people make anywhere from an extra $20,000 to over a million dollars per month."
+            
+            # Generate adaptive closing question based on user's previous responses
+            closing_question = self._generate_adaptive_question(state)
+            
+            # Clean the KB response to remove introductory phrases
+            cleaned_kb_response = self._clean_kb_response(kb_response)
+            
+            # Combine all parts into the final script with smoother transitions
+            # The cleaned KB response provides the core information.
+            # The income statement adds value.
+            # The closing question drives engagement.
+            script = f"{cleaned_kb_response} {income_statement}"
+            
+            # Apply enforce_pivot to ensure goal-oriented question is appended
+            # Create a dummy context for enforce_pivot, as it expects an ObjectionContext
+            # This is a workaround since _generate_dynamic_kb_qa_script doesn't have direct access to thread_id/node_id/persona
+            # A more robust solution would be to pass these parameters down or refactor
+            dummy_ctx = ObjectionContext(thread_id=state.thread_id or "default_thread", 
+                                         node_id=state.current_node_id, 
+                                         persona=state.personality_type or "S")
+            script = self.objection_handler.enforce_pivot(script, dummy_ctx)
+            
+            return script
+        except Exception as e:
+            logging.error(f"Error in _generate_dynamic_kb_qa_script: {e}", exc_info=True)
+            # Fallback to static script
+            return "It's pretty simple, we rank websites for you around some local business, think tree services or plumbing, and then we sell the leads generated from that site to local businesses and bank the passive income. Would you be upset even with just an extra $20k a month?"
+            
+    def _clean_kb_response(self, response: str) -> str:
+        """
+        Cleans the KB response by removing common introductory phrases that sound like an AI.
+        """
+        phrases_to_remove = [
+            "Based on the information provided in the conversation context, ",
+            "Based on the information provided, ",
+            "In general, ",
+            "The business opportunity mentioned seems to involve ",
+            "The business model appears to focus on ",
+            "If you are interested in pursuing this business opportunity, it is essential to conduct thorough due diligence, manage expectations regarding SEO complexities, and consider the potential for dependency within the ecosystem. Additionally, addressing reputational risks and staying informed about industry trends and competition could be crucial for success. "
+        ]
+        
+        cleaned_response = response
+        for phrase in phrases_to_remove:
+            cleaned_response = cleaned_response.replace(phrase, "")
+            
+        # Remove any leading whitespace that might result from removal
+        cleaned_response = cleaned_response.strip()
+        
+        # Ensure the first letter is capitalized if it's a sentence start
+        if cleaned_response and cleaned_response[0].islower():
+            cleaned_response = cleaned_response[0].upper() + cleaned_response[1:]
+            if next_node_id == "N_KB_Q&amp;A_With_StrategicNarrative_V3_Adaptive":
+                logging.info("Transitioning to KB Q&amp;A node - this is where the issue might occur")
+                logging.info("Checking if KB functionality is properly implemented...")
+
+                # Force KB-once path: bypass gating and speak KB content immediately (used by inline company intent)
+                if bool(state.conversation_context.pop("force_kb_once", False)):
+                    logging.info("kb_forced_transition=true; bypassing KB gating and speaking now")
+                    dynamic_script = self._generate_dynamic_kb_qa_script(state)
+                    script = finalize_agent_text(state, dynamic_script, is_objection=False)
+                    await self.session.say(script)
+                    logging.info(f"POST-SAY (KB-forced): len={len(script)} repr={repr(script)}")
+                    self.session.clear_user_turn()
+                    return
+
+                # If this transition immediately follows an opener objection, do not generate/say KB script now
+                if bool(state.conversation_context.get("suppress_kb_script_once")):
+                    logging.info("KB script generation will be suppressed this turn due to opener objection routing.")
+            
+        return cleaned_response
+
+    def _calculate_dynamic_income_range(self, income_level: float, employment_status: str, engagement_level: int) -> dict:
+        """
+        Calculate dynamic income range based on user's financial situation
+        
+        Args:
+            income_level (float): User's current income level
+            employment_status (str): User's employment status
+            engagement_level (int): User's engagement level (0-10)
+            
+        Returns:
+            dict: Dictionary with lower and upper bounds of income range
+        """
+        try:
+            # Adjust range based on employment status
+            if employment_status == "unemployed":
+                # For unemployed users, reference past income
+                lower_bound = income_level * 0.3  # 30% of past income
+                upper_bound = income_level * 1.5  # 150% of past income
+            elif employment_status == "business_owner":
+                # For business owners, reference revenue
+                lower_bound = income_level * 0.2  # 20% of current revenue
+                upper_bound = income_level * 2.0  # 200% of current revenue
+            else:
+                # For employed users, reference current income
+                lower_bound = income_level * 0.4  # 40% of current income
+                upper_bound = income_level * 1.2  # 120% of current income
+                
+            # Adjust range based on engagement level
+            engagement_multiplier = 0.8 + (engagement_level / 10) * 0.4  # Range from 0.8 to 1.2
+            lower_bound *= engagement_multiplier
+            upper_bound *= engagement_multiplier
+            
+            return {
+               "lower": round(lower_bound, -3),  # Round to nearest thousand
+               "upper": round(upper_bound, -3)   # Round to nearest thousand
+           }
+        except Exception as e:
+            logging.error(f"Error in _calculate_dynamic_income_range: {e}", exc_info=True)
+            # Return default range
+            return {"lower": 20000, "upper": 1000000}
+            
+    def _get_personality_based_opening(self, customer_name: str, personality_type: str, expressed_interests: list) -> str:
+        """
+        Generate a personalized opening based on personality type
+        
+        Args:
+            customer_name (str): The customer's name
+            personality_type (str): The user's DISC personality type
+            expressed_interests (list): List of user's expressed interests
+            
+        Returns:
+            str: Personalized opening statement
+        """
+        try:
+            # Create interest-based phrase
+            interest_phrase = ""
+            if expressed_interests:
+                # Take the first interest mentioned
+                interest = expressed_interests[0] if expressed_interests else ""
+                interest_phrase = f"especially when you mentioned {interest}, "
+            
+            # Generate opening based on personality type
+            if personality_type == "D":  # Dominant
+                return f"Alright {customer_name}, let's get straight to it. {interest_phrase}People like you have seen great results with this model."
+            elif personality_type == "I":  # Influential
+                return f"That's a fantastic question, {customer_name}! {interest_phrase}I'm excited to share how people in your situation are seeing amazing results."
+            elif personality_type == "C":  # Conscientious
+                return f"I appreciate your thoroughness, {customer_name}. {interest_phrase}Our data shows consistent results for people with similar profiles using our systematic approach."
+            else:  # Steady (default)
+                return f"I hear your questions, {customer_name}, and I'm happy to help. {interest_phrase}This opportunity could be a really good fit for you."
+        except Exception as e:
+            logging.error(f"Error in _get_personality_based_opening: {e}", exc_info=True)
+            return f"I hear your questions, {customer_name}, and I'm happy to help."
+            
+    def _generate_income_statement(self, income_range: dict, employment_status: str, income_level: float) -> str:
+        """
+        Generate an income statement with dynamic figures
+        
+        Args:
+            income_range (dict): Dictionary with lower and upper bounds
+            employment_status (str): User's employment status
+            income_level (float): User's income level
+            
+        Returns:
+            str: Income statement with dynamic figures
+        """
+        try:
+            lower = income_range["lower"]
+            upper = income_range["upper"]
+            
+            # Format numbers for readability
+            if lower >= 1000000:
+                lower_str = f"${lower/1000000:.1f} million"
+            elif lower >= 1000:
+                lower_str = f"${lower/1000:.0f}k"
+            else:
+                lower_str = f"${lower}"
+                
+            if upper >= 1000000:
+                upper_str = f"${upper/1000000:.1f} million"
+            elif upper >= 1000:
+                upper_str = f"${upper/1000:.0f}k"
+            else:
+                upper_str = f"${upper}"
+            
+            # Adjust statement based on employment status
+            if employment_status == "unemployed":
+                return f"Based on your previous income of ${income_level:,.0f}, many people in similar situations have been able to rebuild and exceed that amount, with some generating {lower_str} to {upper_str} per month."
+            elif employment_status == "business_owner":
+                return f"With your business already generating ${income_level:,.0f} per month, our students have found they can create an additional {lower_str} to {upper_str} through this model."
+            else:  # employed
+                return f"Building on your current income of ${income_level:,.0f}, many of our students have been able to generate an additional {lower_str} to {upper_str} per month."
+        except Exception as e:
+            logging.error(f"Error in _generate_income_statement: {e}", exc_info=True)
+            return "Many of our students have been able to generate significant income - we've seen people make anywhere from an extra $20,000 to over a million dollars per month."
+            
+    def _generate_adaptive_question(self, state: CallFlowState) -> str:
+        """
+        Generate an adaptive closing question based on user's previous responses
+        
+        Args:
+            state (CallFlowState): The current conversation state
+            
+        Returns:
+            str: Adaptive closing question
+        """
+        try:
+            # Get user data
+            previous_questions = state.user_preferences.get('previous_questions', [])
+            expressed_interests = state.user_preferences.get('interests', [])
+            employment_status = state.user_preferences.get('employment_status', 'employed')
+            personality_type = state.personality_type or "S"
+            engagement_level = state.qualification_status.get('engagement_level', 5)
+            
+            # Check if user asked technical questions
+            technical_keywords = ['how', 'technical', 'process', 'system', 'method']
+            has_technical_questions = any(
+                any(keyword in q.lower() for keyword in technical_keywords)
+                for q in previous_questions
+            )
+            
+            # Check if user asked about timeline
+            timeline_keywords = ['when', 'timeline', 'quick', 'fast', 'soon']
+            has_timeline_questions = any(
+                any(keyword in q.lower() for keyword in timeline_keywords)
+                for q in previous_questions
+            )
+            
+            # Check if user asked about risk
+            risk_keywords = ['risk', 'safe', 'secure', 'guarantee', 'concern']
+            has_risk_questions = any(
+                any(keyword in q.lower() for keyword in risk_keywords)
+                for q in previous_questions
+            )
+            
+            # Check if user asked about time commitment
+            time_commitment_keywords = ['time', 'hours', 'commitment', 'busy']
+            has_time_commitment_questions = any(
+                any(keyword in q.lower() for keyword in time_commitment_keywords)
+                for q in previous_questions
+            )
+            
+            # Generate question based on what the user asked about
+            if has_technical_questions and expressed_interests:
+                interest = expressed_interests[0] if expressed_interests else "this"
+                return f"Since you've asked about the technical aspects of {interest}, would you like me to dive deeper into how that works, or are you more curious about the financial potential we've seen with people in similar situations?"
+            elif has_timeline_questions:
+                timeframe = "a few months" if engagement_level > 5 else "6-12 months"
+                return f"You mentioned wanting to see results quickly. Based on what I know about your situation, many of our students start seeing significant results within {timeframe}. Would you like to know what makes that possible for people like you?"
+            elif has_risk_questions:
+                experience = "your background"  # This would be more specific in a real implementation
+                return f"I understand your concern about risk. Given {experience}, many people with similar profiles have been able to generate substantial income with our lowest-risk approach. What specific aspects of risk management would you like to know more about?"
+            elif has_time_commitment_questions:
+                time_commitment = "just a few hours per week" if engagement_level > 5 else "5-10 hours per week"
+                return f"You asked about time commitment, which is important for someone in your situation. People with similar profiles have been able to generate substantial income while spending {time_commitment}. Would you like to know how they make that work?"
+            else:
+                # Default adaptive question
+                if engagement_level > 7:
+                    # High engagement
+                    interest_phrase = ""
+                    if expressed_interests:
+                        interest = expressed_interests[0] if expressed_interests else ""
+                        interest_phrase = f"especially since you're interested in {interest}, "
+                    return f"I can see you're really engaged with this concept, {interest_phrase}what specific aspects would you like to know more about?"
+                elif engagement_level > 3:
+                    # Medium engagement
+                    return "I appreciate your questions. What aspects of this opportunity are you most curious about?"
+                else:
+                    # Low engagement
+                    return "What's the most important thing for you to understand about this opportunity?"
+        except Exception as e:
+            logging.error(f"Error in _generate_adaptive_question: {e}", exc_info=True)
+            return "Now, I'm curious - what aspects of this opportunity are you most interested in learning more about?"
+            
+    def _query_knowledge_base(self, interests: list, conversation_history: list) -> str:
+        """
+        Query the knowledge base for information related to user interests and conversation history.
+        
+        Args:
+            interests: List of user's expressed interests
+            conversation_history: History of the conversation
+            
+        Returns:
+            str: Response from the knowledge base
+        """
+        try:
+            # Create a query from user interests and recent conversation
+            recent_context = self._get_recent_context(conversation_history)
+            
+            if interests:
+                query = f"Based on the conversation, the user is interested in {', '.join(interests)}. {recent_context}"
+            else:
+                query = f"What are the key benefits of our business model? {recent_context}"
+            
+            # Query the KB processor
+            kb_response = self.kb_processor.query(query)
+            
+            return kb_response
+        except Exception as e:
+            logging.error(f"Error querying knowledge base: {e}", exc_info=True)
+            return "Based on what I've learned, our program has many benefits that can help you achieve your goals."
+ 
+    def _get_recent_context(self, conversation_history: list) -> str:
+        """
+        Extract recent context from conversation history.
+        
+        Args:
+            conversation_history: History of the conversation
+            
+        Returns:
+            str: Recent conversation context
+        """
+        try:
+            if not conversation_history:
+                return ""
+            
+            # Get the last 3 exchanges (user and agent)
+            recent_exchanges = conversation_history[-6:]  # Last 3 exchanges (2 messages each)
+            
+            context = "Recent conversation context: "
+            for exchange in recent_exchanges:
+                speaker = exchange.get('speaker', 'unknown')
+                text = exchange.get('text', '')
+                context += f"{speaker}: {text} "
+                
+            return context
+        except Exception as e:
+            logging.error(f"Error getting recent context: {e}", exc_info=True)
+            return ""
+ 
+    async def _transition_to_node(self, next_node_id: str):
+        """
+        Transition to the next node in the conversation flow.
+        
+        Args:
+            next_node_id (str): The ID of the next node to transition to
+        """
+        try:
+            state: CallFlowState = self.session.userdata
+            
+            # Log the transition attempt
+            logging.info(f"Attempting to transition to node: {next_node_id}")
+            
+            # Special logging for KB Q&A node
+            if next_node_id == "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive":
+                logging.info("Transitioning to KB Q&A node - this is where the issue might occur")
+                logging.info("Checking if KB functionality is properly implemented...")
+                # If this transition immediately follows an opener objection, do not generate/say KB script now
+                if bool(state.conversation_context.get("suppress_kb_script_once")):
+                    logging.info("KB script generation will be suppressed this turn due to opener objection routing.")
+            
+            # Validate the next node ID
+            if not next_node_id or not isinstance(next_node_id, str):
+                logging.error(f"Invalid next node ID: {next_node_id}")
+                # Fallback to a safe node or end the conversation
+                next_node_id = "N001A_NameConfirmation_Only"  # Fallback to initial node
+            
+            # Check if this transition is part of an A/B test
+            try:
+                ab_test_node_id = ab_test_manager.get_node_for_user("intro_test_001", state.customer_name or "default_user")
+                if ab_test_node_id:
+                    next_node_id = ab_test_node_id
+                    logging.info(f"A/B test assigned node: {next_node_id}")
+            except Exception as e:
+                logging.error(f"Error checking A/B test: {e}", exc_info=True)
+            
+            # Update the state
+            state.current_node_id = next_node_id
+            
+            # Get the next node
+            next_node = nodes.get(next_node_id)
+            if not next_node:
+                logging.error(f"Node '{next_node_id}' not found in call_flow.")
+                # Try to fallback to a safe node
+                fallback_node_id = "N001A_NameConfirmation_Only"
+<![CDATA[
+                # Forced KB bypass: if set by inline company-intent path, skip gating and speak KB node script now
+                if bool(state.conversation_context.pop("force_kb_once", False)):
+                    logging.info("kb_forced_transition=True; bypassing KB gating and speaking KB node script")
+                    script_forced = next_node.get("script", "")
+                    if state.customer_name:
+                        script_forced = script_forced.replace("{{customer_name}}", state.customer_name)
+                    script_forced = finalize_agent_text(state, script_forced, is_objection=False)
+                    await self.session.say(script_forced)
+                    logging.info(f"POST-SAY (KB-forced): len={len(script_forced)} repr={repr(script_forced)}")
+                    self.session.clear_user_turn()
+                    return
+]]>
+                next_node = nodes.get(fallback_node_id)
+                if not next_node:
+                    logging.error(f"Fallback node '{fallback_node_id}' also not found.")
+                    try:
+                        await self.session.close()
+                    except Exception as close_error:
+                        logging.error(f"Error closing session: {close_error}", exc_info=True)
+                    return
+                else:
+                    # Update state to fallback node
+                    state.current_node_id = fallback_node_id
+                    logging.info(f"Falling back to node: {fallback_node_id}")
+            
+            # Record analytics for agent turn
+            script = next_node["script"]
+            if state.customer_name:
+                script = script.replace("{{customer_name}}", state.customer_name)
+            
+            conversation_analytics.record_turn('agent', script)
+            
+            # Log the script that will be spoken
+            logging.info(f"About to speak script: '{script}'")
+            logging.info(f"Script length: {len(script)} characters")
+            
+            # If an opener objection just occurred and suppression flag is set, do not speak the next-node script
+            suppress_next = bool(state.conversation_context.pop("suppress_next_say", False))
+            if suppress_next:
+                logging.info("suppress_next_say=True; next script will not be spoken.")
+            if suppress_next:
+                logging.info("Suppressing next-node script speak due to objection-immediate route; state transitioned only.")
+                self.session.clear_user_turn()
+                return
+            
+            # Special handling for KB Q&A node to use dynamic script generation
+            if next_node_id == "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive":
+                # If this KB transition immediately follows an opener objection route, suppress speaking this turn
+                if bool(state.conversation_context.pop("suppress_kb_script_once", False)):
+                    logging.info("KB script generation suppressed due to immediate opener objection route.")
+                    self.session.clear_user_turn()
+                    return
+                # Gate KB invocation
+                last_user = ""
+                try:
+                    # last user message from history if exists
+                    for entry in reversed(state.conversation_history):
+                        if entry.get("speaker") == "user":
+                            last_user = entry.get("text", "")
+                            break
+                except Exception:
+                    pass
+                if not self._should_invoke_kb(state, last_user):
+                    logging.info("KB gating blocked KB speak; rerouting to IntroduceModel default path.")
+                    # Prefer IntroduceModel default if present in call_flow
+                    fallback_intro = nodes.get("N_IntroduceModel_And_AskQuestions_V3_Adaptive")
+                    if fallback_intro:
+                        state.current_node_id = "N_IntroduceModel_And_AskQuestions_V3_Adaptive"
+                        script = fallback_intro["script"]
+                        if state.customer_name:
+                            script = script.replace("{{customer_name}}", state.customer_name)
+                        script = finalize_agent_text(state, script, is_objection=False)
+                        await self.session.say(script)
+                        logging.info(f"POST-SAY (KB-gated->Intro): len={len(script)} repr={repr(script)}")
+                        self.session.clear_user_turn()
+                        return
+                    # If no intro node, silently suppress KB speak this turn
+                    self.session.clear_user_turn()
+                    return
+                logging.info("About to speak KB Q&A script - using dynamic generation")
+                dynamic_script = self._generate_dynamic_kb_qa_script(state)
+                logging.info("Dynamic script for KB Q&A node:")
+                logging.info(dynamic_script)
+                script = finalize_agent_text(state, dynamic_script, is_objection=False)
+                script = finalize_agent_text(state, script, is_objection=False)
+                await self.session.say(script)
+                logging.info(f"POST-SAY (KB): len={len(script)} repr={repr(script)}")
+            else:
+                # Speak the standard next node script (non-KB)
+                script = finalize_agent_text(state, script, is_objection=False)
+                await self.session.say(script)
+                logging.info(f"POST-SAY: len={len(script)} repr={repr(script)}")
+            
+            # Clear the user turn to prepare for the next response
+            self.session.clear_user_turn()
+        except Exception as e:
+            logging.error(f"Unexpected error in _transition_to_node: {e}", exc_info=True)
+            # Log the error but don't try to recover by restarting the conversation
+            # The session will naturally end if the error is unrecoverable
+ 
+    def _contains_objection(self, user_input: str) -> bool:
+        """
+        Check if user input contains an objection
+        
+        Args:
+            user_input (str): The user's response
+            
+        Returns:
+            bool: True if the input contains an objection
+        """
+        try:
+            # Check if input is a question (ends with ? or contains question words)
+            user_input_lower = user_input.lower().strip()
+            is_question = (
+                user_input_lower.endswith('?') or
+                any(word in user_input_lower for word in ['what', 'how', 'why', 'when', 'where', 'which', 'question'])
+            )
+            
+            
+            # Check for explicit objection indicators
+            objection_indicators = [
+                "no", "not interested", "busy", "don't have time", "not now",
+                "too expensive", "too costly", "can't afford", "not for me",
+                "don't need", "not relevant", "skeptical", "doubt", "concern",
+                "risk", "guarantee", "proof", "evidence", "scam", "legitimate",
+                "too much", "don't believe", "not possible", "can't make",
+                "really", "not really" # Added to catch more subtle objections
+            ]
+            
+            return any(indicator in user_input_lower for indicator in objection_indicators)
+        except Exception as e:
+            logging.error(f"Error in _contains_objection: {e}", exc_info=True)
+            return False  # Assume no objection if there's an error
+ 
+    def _is_ambiguous(self, user_input: str) -> bool:
+        """
+        Check if user input is ambiguous
+        
+        Args:
+            user_input (str): The user's response
+            
+        Returns:
+            bool: True if the input is ambiguous
+        """
+        try:
+            ambiguous_indicators = [
+                "huh", "what", "hmm", "uh", "um", "er", "well", "so", "okay",
+                "i see", "right", "yeah", "yes", "no", "maybe", "perhaps"
+            ]
+            
+            user_input_lower = user_input.lower().strip()
+            return user_input_lower in ambiguous_indicators or len(user_input_lower) < 3
+        except Exception as e:
+            logging.error(f"Error in _is_ambiguous: {e}", exc_info=True)
+            return True  # Assume ambiguous if there's an error
+ 
+    def _contains_monetary_value(self, text: str) -> bool:
+        """
+        Check if text contains monetary values.
+        
+        Args:
+            text (str): The text to analyze
+            
+        Returns:
+            bool: True if the text contains monetary values
+        """
+        try:
+            text_lower = text.lower()
+            
+            # Check for common monetary value patterns
+            monetary_patterns = [
+                r'\$\d+',  # $ followed by digits
+                r'\d+\s*dollars',  # digits followed by "dollars"
+                r'\d+\s*grand',  # digits followed by "grand"
+                r'\d+\s*k',  # digits followed by "k"
+                r'\d+\s*thousand',  # digits followed by "thousand"
+                r'\d+\s*million',  # digits followed by "million"
+                r'\d+\s*m',  # digits followed by "m"
+                r'\d+\s*billion',  # digits followed by "billion"
+                r'\d+\s*b',  # digits followed by "b"
+                r'\d+\s*figures',  # digits followed by "figures"
+                r'\d+[kKmM]'  # digits followed by k/K/m/M
+            ]
+            
+            # Check for monetary indicators
+            monetary_indicators = ["k a year", "k a month", "figures", "dollars", "thousand", "million", "billion", "$", "£", "€"]
+            
+            # Check if any pattern matches or any indicator is present
+            import re
+            for pattern in monetary_patterns:
+                if re.search(pattern, text_lower):
+                    return True
+                    
+            return any(indicator in text_lower for indicator in monetary_indicators)
+        except Exception as e:
+            logging.error(f"Error in _contains_monetary_value: {e}", exc_info=True)
+            return False  # Assume no monetary value if there's an error
+            
+    def _track_user_preferences(self, state: CallFlowState, user_input: str):
+        """
+        Track user preferences, questions, and interests for personalization
+        
+        Args:
+            state (CallFlowState): The current conversation state
+            user_input (str): The user's input
+        """
+        try:
+            # Initialize user preferences if not present
+            if not state.user_preferences:
+                state.user_preferences = {}
+                
+            # Initialize previous questions list if not present
+            if 'previous_questions' not in state.user_preferences:
+                state.user_preferences['previous_questions'] = []
+                
+            # Initialize interests list if not present
+            if 'interests' not in state.user_preferences:
+                state.user_preferences['interests'] = []
+                
+            # Check if user input is a question
+            user_input_lower = user_input.lower().strip()
+            is_question = (
+                user_input_lower.endswith('?') or
+                any(word in user_input_lower for word in ['what', 'how', 'why', 'when', 'where', 'which'])
+            )
+            
+            # If it's a question, add to previous questions
+            if is_question:
+                state.user_preferences['previous_questions'].append(user_input)
+                # Keep only the last 5 questions
+                if len(state.user_preferences['previous_questions']) > 5:
+                    state.user_preferences['previous_questions'] = state.user_preferences['previous_questions'][-5:]
+            
+            # Extract potential interests from user input
+            # This is a simplified approach - in a real implementation, you might use NLP
+            interest_keywords = [
+                'income', 'money', 'passive', 'business', 'opportunity', 'website',
+                'traffic', 'leads', 'rank', 'google', 'seo', 'digital', 'real estate',
+                'time', 'flexibility', 'freedom', 'schedule', 'work', 'job'
+            ]
+            
+            # Find interests in user input
+            found_interests = []
+            for keyword in interest_keywords:
+                if keyword in user_input_lower and keyword not in state.user_preferences['interests']:
+                    found_interests.append(keyword)
+                    
+            # Add new interests to the list
+            state.user_preferences['interests'].extend(found_interests)
+            # Keep only unique interests
+            state.user_preferences['interests'] = list(set(state.user_preferences['interests']))
+            # Keep only the last 10 interests
+            if len(state.user_preferences['interests']) > 10:
+                state.user_preferences['interests'] = state.user_preferences['interests'][-10:]
+            
+            # Extract employment status indicators
+            employment_indicators = {
+                'business_owner': ['own business', 'self-employed', 'entrepreneur', 'business owner'],
+                'unemployed': ['unemployed', 'laid off', 'no job', 'between jobs'],
+                'employed': ['employed', 'have a job', 'work for']
+            }
+            
+            # Check for employment status in user input
+            for status, indicators in employment_indicators.items():
+                if any(indicator in user_input_lower for indicator in indicators):
+                    state.user_preferences['employment_status'] = status
+                    break
+            
+            # Extract income level if mentioned
+            # This is a simplified approach - in a real implementation, you might use more sophisticated parsing
+            import re
+            monetary_matches = re.findall(r'\$(\d+(?:,\d+)?)', user_input)
+            if monetary_matches:
+                # Take the first monetary value mentioned
+                try:
+                    income_value = int(monetary_matches[0].replace(',', ''))
+                    state.user_preferences['income_level'] = income_value
+                except ValueError:
+                    pass  # Ignore if we can't parse the value
+                    
+            logging.info(f"Updated user preferences: {state.user_preferences}")
+        except Exception as e:
+            logging.error(f"Error in _track_user_preferences: {e}", exc_info=True)
+            # Continue without tracking preferences if there's an error
+            
+    async def _prepare_for_user_response(self, current_node: dict):
+        """
+        Dynamically builds the agent's tools and prompt for the current turn.
+        """
+        try:
+            state: CallFlowState = self.session.userdata
+            
+            # Build the dynamic tool for transitioning state
+            transition_tool = self._create_transition_tool(current_node)
+            await self.update_tools([transition_tool])
+            
+            # Build the dynamic prompt for the LLM
+            prompt = self._build_dynamic_prompt(current_node)
+            await self.update_instructions(prompt)
+            
+            logging.info(f"Agent prepared for user response at node {state.current_node_id}.")
+            logging.debug(f"Available transitions: {list(current_node.get('transitions', {}).keys())}")
+        except Exception as e:
+            logging.error(f"Error in _prepare_for_user_response: {e}", exc_info=True)
+            # Log the error but don't try to recover by restarting the conversation
+            # The session will naturally end if the error is unrecoverable
+
+    def _build_dynamic_prompt(self, current_node: dict) -> str:
+        """Constructs the full prompt for the LLM for the current turn."""
+        try:
+            state: CallFlowState = self.session.userdata
+            
+            # Get available transitions and describe them for the LLM
+            transitions = current_node.get("transitions", {})
+            transition_descriptions = "\n".join([f"- '{key}': to transition to node '{value}'." for key, value in transitions.items()])
+            
+            # Append the dynamic context to the global prompt
+            dynamic_context = f"""## SECTION 6: YOUR CURRENT TASK
+            
+            *   **Your Current State:** You are at conversation node '{state.current_node_id}'.
+            *   **Your Last Utterance:** You just said: "{current_node['script']}"
+            *   **Your Immediate Goal:** Listen to the user's response and determine their intent. Based on their intent, you MUST call the `transition_to_next_node` tool to move to the appropriate next state.
+            *   **Available Transitions:** You must choose one of the following transition keys based on the user's intent:
+            {transition_descriptions}
+            *   **Default Behavior:** If the user's intent is ambiguous or doesn't fit any other category, use the 'default' transition if available.
+            *   **IMPORTANT RULE:** You MUST ONLY respond by calling the `transition_to_next_node` tool. Do not generate any other text response. The tool call is the only valid response."""
+            return f"{GLOBAL_PROMPT}\n{dynamic_context}"
+        except Exception as e:
+            logging.error(f"Error in _build_dynamic_prompt: {e}", exc_info=True)
+            # Return a minimal prompt as fallback
+            state: CallFlowState = self.session.userdata
+            return f"""{GLOBAL_PROMPT}
+            
+            ## SECTION 6: YOUR CURRENT TASK
+            
+            *   **Your Current State:** You are at conversation node '{state.current_node_id}'.
+            *   **Error Recovery:** An error occurred while building the dynamic prompt.
+            *   **Action:** Please transition to the next node using the available tool.
+            
+            Please use the `transition_to_next_node` tool to continue the conversation."""
+ 
+    def _create_transition_tool(self, current_node: dict) -> llm.FunctionTool:
+        """
+        Factory method to create a dynamic function_tool for state transitions.
+        The tool's schema is constrained to only allow valid next nodes.
+        """
+        try:
+            state: CallFlowState = self.session.userdata
+            
+            # 1. Get the valid transitions for the current node
+            transitions = current_node.get("transitions", {})
+            if not transitions:
+                # If no transitions, create a tool that does nothing to avoid errors
+                async def no_op(context: RunContext):
+                    logging.warning(f"No transitions available from node {state.current_node_id}")
+                    return "No transitions available."
+                return function_tool(no_op, name="transition_to_next_node", description="No transitions defined for this state.")
+            
+            # 2. Create a dynamic Enum for the allowed transition keys
+            # The name must be unique for each schema generation
+            enum_name = f"ValidTransitions_{state.current_node_id}"
+            TransitionEnum = Enum(enum_name, {key: key for key in transitions.keys()})
+            
+            # 3. Define the handler function for the tool
+            async def transition_to_next_node(context: RunContext, next_intent: TransitionEnum):
+                """
+                Processes the user's intent and transitions the call to the next node.
+                """
+                try:
+                    chosen_intent = next_intent.value
+                    
+                    # Validate the chosen intent
+                    if chosen_intent not in transitions:
+                        logging.warning(f"Invalid intent '{chosen_intent}' for node {state.current_node_id}. Using default transition.")
+                        chosen_intent = "default" if "default" in transitions else list(transitions.keys())[0] if transitions else None
+                        
+                    # If still no valid transition, log error and return
+                    if not chosen_intent or chosen_intent not in transitions:
+                        logging.error(f"No valid transition found for node {state.current_node_id}.")
+                        return "Error: No valid transition found."
+                        
+                    next_node_id = transitions[chosen_intent]
+                    
+                    logging.info(f"LLM chose intent '{chosen_intent}', transitioning from '{state.current_node_id}' to '{next_node_id}'.")
+                    
+                    # Cancel dead air detection before speaking any responses (disabled)
+                    # self._cancel_dead_air_detection()
+                    
+                    # Handle special responses from the conversation context
+                    # These are responses that were prepared in _handle_user_response but not yet spoken
+                    if 'objection_response' in context.userdata.conversation_context:
+                        response = context.userdata.conversation_context['objection_response']
+                        del context.userdata.conversation_context['objection_response']
+                        response = finalize_agent_text(context.userdata, response, is_objection=True)
+                        await self.session.say(response)
+                        logging.info(f"Agent said objection response: '{response}'")
+                        
+                    if 'psp_follow_up_response' in context.userdata.conversation_context:
+                        response = context.userdata.conversation_context['psp_follow_up_response']
+                        del context.userdata.conversation_context['psp_follow_up_response']
+                        response = finalize_agent_text(context.userdata, response, is_objection=True)
+                        await self.session.say(response)
+                        logging.info(f"Agent said PSP follow-up response: '{response}'")
+                        
+                    if 'ambiguity_response' in context.userdata.conversation_context:
+                        response = context.userdata.conversation_context['ambiguity_response']
+                        del context.userdata.conversation_context['ambiguity_response']
+                        response = finalize_agent_text(context.userdata, response, is_objection=False)
+                        await self.session.say(response)
+                        logging.info(f"Agent said ambiguity response: '{response}'")
+                    
+                    # Update the state
+                    context.userdata.current_node_id = next_node_id
+                    
+                    # Get the next node
+                    next_node = nodes.get(next_node_id)
+                    if not next_node:
+                        logging.error(f"Node '{next_node_id}' not found in call_flow.")
+                        return f"Error: Node '{next_node_id}' not found."
+                    
+                    # Prepare for the next user response
+                    await self._prepare_for_user_response(next_node)
+                    
+                    # Speak the script for the next node
+                    script = next_node["script"]
+                    # Simple templating for customer_name
+                    if context.userdata.customer_name:
+                        script = script.replace("{{customer_name}}", context.userdata.customer_name)
+                    
+                    script = finalize_agent_text(context.userdata, script, is_objection=False)
+                    await self.session.say(script)
+                    logging.info(f"POST-SAY (tool): len={len(script)} repr={repr(script)}")
+                    
+                    # Start dead air detection after speaking (disabled)
+                    # self._start_dead_air_detection()
+                    
+                    self.session.clear_user_turn()
+                    
+                    return f"Successfully transitioned to node {next_node_id}."
+                except Exception as e:
+                    logging.error(f"Error in transition_to_next_node: {e}", exc_info=True)
+                    # Log the error but don't try to recover by restarting the conversation
+                    # The session will naturally end if the error is unrecoverable
+                    return "Error: Session encountered an unrecoverable error."
+ 
+            # 4. Create the tool programmatically using function_tool as a function
+            # This allows us to define the schema dynamically, including the Enum
+            tool = function_tool(
+                transition_to_next_node,
+                name="transition_to_next_node",
+                description="Select the user's intent to transition to the next conversational state."
+            )
+            return tool
+        except Exception as e:
+            logging.error(f"Error in _create_transition_tool: {e}", exc_info=True)
+            # Log the error but don't try to recover by restarting the conversation
+            # The session will naturally end if the error is unrecoverable
+            async def minimal_transition(context: RunContext):
+                logging.warning("Using minimal transition tool due to error in _create_transition_tool")
+                return "Error: Session encountered an unrecoverable error in tool creation."
+            
+            return function_tool(
+                minimal_transition,
+                name="transition_to_next_node",
+                description="Minimal transition tool due to error in _create_transition_tool"
+            )
+ 
+    def _check_goal_achievement(self, node_id: str, user_input: str) -> bool:
+        """
+        Check if the user's response indicates that the goal of the current node has been achieved.
+        This is a placeholder and should be implemented with more sophisticated logic.
+        """
+        # For now, we'll assume the goal is achieved if the user doesn't raise another objection.
+        return not self._contains_objection(user_input)

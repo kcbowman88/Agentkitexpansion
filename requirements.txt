@@ -1,0 +1,17 @@
+livekit-agents
+livekit-plugins-openai
+livekit-plugins-silero
+livekit-plugins-noise-cancellation
+livekit-plugins-turn-detector
+livekit-plugins-elevenlabs
+mem0ai
+duckduckgo-search
+langchain_community
+langchain-openai
+requests
+python-dotenv
+deepgram-sdk
+faiss-cpu
+openai
+pypdf
+tiktoken

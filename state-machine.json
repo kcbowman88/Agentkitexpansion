@@ -1,0 +1,298 @@
+{
+  "N_Obj_RealBusy_BluntCheck_V3_Adaptive": {
+    "goal": "To assertively diagnose whether the user's 'I'm busy' objection is a genuine time constraint or a polite dismissal due to a lack of perceived value.",
+    "script": "Let me be blunt. Are you not sure why you should be listening to this, or is there a meeting coming up for you right now?",
+    "transitions": {
+      "meeting_coming_up": "N_Obj_RealBusy_AskMeetingTime",
+      "not_sure_why_listening": "N_Obj_RealBusy_OfferReschedule",
+      "default": "N_Obj_RealBusy_OfferReschedule"
+    }
+  },
+  "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Dominant": {
+    "goal": "To deliver a concise, high-level summary of the business model and then proactively ask an open-ended question to surface the user's initial thoughts or concerns (Dominant personality variant).",
+    "context": "You are entering this node after the user has shown initial interest and is ready for a basic explanation of what the program does. The user has been classified as having a Dominant personality type.",
+    "script": "Okay. In a nutshell, we set up passive income websites that generate revenue with minimal ongoing effort. What's the biggest concern you have about this model?",
+    "transitions": {
+      "default": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"
+    }
+  },
+  "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Influential": {
+    "goal": "To deliver a concise, high-level summary of the business model and then proactively ask an open-ended question to surface the user's initial thoughts or concerns (Influential personality variant).",
+    "context": "You are entering this node after the user has shown initial interest and is ready for a basic explanation of what the program does. The user has been classified as having an Influential personality type.",
+    "script": "Okay. In a nutshell, we set up passive income websites, and we let them produce income for you. Isn't that exciting? What aspects of this do you find most interesting?",
+    "transitions": {
+      "default": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"
+    }
+  },
+  "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Steady": {
+    "goal": "To deliver a concise, high-level summary of the business model and then proactively ask an open-ended question to surface the user's initial thoughts or concerns (Steady personality variant).",
+    "context": "You are entering this node after the user has shown initial interest and is ready for a basic explanation of what the program does. The user has been classified as having a Steady personality type.",
+    "script": "Okay. In a nutshell, we set up passive income websites, and we let them produce income for you. Take your time to think about it. What questions come to mind as you consider this opportunity?",
+    "transitions": {
+      "default": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"
+    }
+  },
+  "N_IntroduceModel_And_AskQuestions_V3_Adaptive_Conscientious": {
+    "goal": "To deliver a concise, high-level summary of the business model and then proactively ask an open-ended question to surface the user's initial thoughts or concerns (Conscientious personality variant).",
+    "context": "You are entering this node after the user has shown initial interest and is ready for a basic explanation of what the program does. The user has been classified as having a Conscientious personality type.",
+    "script": "Okay. In a nutshell, we set up passive income websites, and we let them produce income for you. I can provide more detailed information about the process if you'd like. What specific aspects would you like to know more about?",
+    "transitions": {
+      "default": "N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"
+    }
+  },
+  "N200_Super_WorkAndIncomeBackground_V3_Adaptive_Dominant": {
+    "goal": "To leverage a positive interaction with an upbeat tone and determine the user's employment status (employee vs. owner) (Dominant personality variant).",
+    "context": "You are entering this node after a positive or humorous interaction with {{customer_name}}. The user has been classified as having a Dominant personality type.",
+    "script": "Great! So, are you currently employed or running your own business? I'm looking to understand your current situation so we can determine how this opportunity fits.",
+    "transitions": {
+      "employed": "N201A_Employed_AskYearlyIncome_V8_Adaptive",
+      "business_owner": "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned",
+      "unemployed": "N201E_Unemployed_EmpathyAskPastYearlyIncome_V5_Adaptive",
+      "default": "N201A_Employed_AskYearlyIncome_V8_Adaptive"
+    }
+  },
+  "N200_Super_WorkAndIncomeBackground_V3_Adaptive_Influential": {
+    "goal": "To leverage a positive interaction with an upbeat tone and determine the user's employment status (employee vs. owner) (Influential personality variant).",
+    "context": "You are entering this node after a positive or humorous interaction with {{customer_name}}. The user has been classified as having an Influential personality type.",
+    "script": "That's fantastic! So, are you working for someone right now or do you run your own business? I'd love to hear about your current situation!",
+    "transitions": {
+      "employed": "N201A_Employed_AskYearlyIncome_V8_Adaptive",
+      "business_owner": "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned",
+      "unemployed": "N201E_Unemployed_EmpathyAskPastYearlyIncome_V5_Adaptive",
+      "default": "N201A_Employed_AskYearlyIncome_V8_Adaptive"
+    }
+  },
+  "N200_Super_WorkAndIncomeBackground_V3_Adaptive_Steady": {
+    "goal": "To leverage a positive interaction with an upbeat tone and determine the user's employment status (employee vs. owner) (Steady personality variant).",
+    "context": "You are entering this node after a positive or humorous interaction with {{customer_name}}. The user has been classified as having a Steady personality type.",
+    "script": "I'm glad you're enjoying this! So, are you working for someone right now or do you run your own business? Take your time to think about it.",
+    "transitions": {
+      "employed": "N201A_Employed_AskYearlyIncome_V8_Adaptive",
+      "business_owner": "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned",
+      "unemployed": "N201E_Unemployed_EmpathyAskPastYearlyIncome_V5_Adaptive",
+      "default": "N201A_Employed_AskYearlyIncome_V8_Adaptive"
+    }
+  },
+  "N200_Super_WorkAndIncomeBackground_V3_Adaptive_Conscientious": {
+    "goal": "To leverage a positive interaction with an upbeat tone and determine the user's employment status (employee vs. owner) (Conscientious personality variant).",
+    "context": "You are entering this node after a positive or humorous interaction with {{customer_name}}. The user has been classified as having a Conscientious personality type.",
+    "script": "That's wonderful! So, are you working for someone right now or do you run your own business? I'm interested in understanding your current professional situation.",
+    "transitions": {
+      "employed": "N201A_Employed_AskYearlyIncome_V8_Adaptive",
+      "business_owner": "N202A_AskCurrentMonthlyRevenue_V7_FullyTuned",
+      "unemployed": "N201E_Unemployed_EmpathyAskPastYearlyIncome_V5_Adaptive",
+      "default": "N201A_Employed_AskYearlyIncome_V8_Adaptive"
+    }
+  },
+  "N_Obj_EarlyDismiss_ShareBackgroundAskWhy": {
+    "goal": "Share personal background story and ask them if they know why the opportunity is so good.",
+    "context": "Entered from N_Obj_EarlyDismiss_AskShareBackground after prospect agreed to hear the background.",
+    "script": "I am a military veteran. I have a software engineering degree, and I know there's a lot of BS out there. But because I went through the program myself, I can tell you this has given people like me a real shot at an extra 20,000 or more per month. Do you know why?",
+    "transitions": {
+      "default": "N_Obj_EarlyDismiss_ExplainReasonAndExplore"
+    }
+  },
+  "N_Obj_EarlyDismiss_ExplainReasonAndExplore": {
+    "goal": "Edify Product Value, and ask them if it's interesting.",
+    "context": "Entered from N_Obj_EarlyDismiss_ShareBackgroundAskWhy after prospect responded to 'Do you know why?'",
+    "script": "[Their Name], if I shared with you a real shot at an extra 20,000 per month passively... would you keep talking to me?",
+    "transitions": {
+      "default": "N_Obj_EarlyDismiss_ConnectToCurrentCall"
+    }
+  },
+  "N_Obj_EarlyDismiss_ConnectToCurrentCall": {
+    "goal": "Ask them if they want to know more about how to get the money.",
+    "context": "Entered from N_Obj_EarlyDismiss_DirectValueChallenge after the prospect responded positively or with curiosity.",
+    "script": "That's exactly what the next couple of minutes are about! So, is this range of 20,000 up to 1 million per month in passive income something that may be worth exploring in your opinion?",
+    "transitions": {
+      "agrees_to_explore": "N_IntroduceModel_And_AskQuestions_V3_Adaptive",
+      "default": "N_IntroduceModel_And_AskQuestions_V3_Adaptive"
+    }
+  },
+  "N_Obj_RealBusy_AskMeetingTime": {
+    "goal": "Acknowledge their upcoming meeting and ask specifically how long until their meeting.",
+    "context": "Entered from N_Obj_RealBusy_BluntCheck after the prospect confirmed they have an actual meeting.",
+    "script": "No problem. In how long is your meeting?",
+    "transitions": {
+      "time_given": "N_Obj_RealBusy_StateRemainingTimeAndWrapUp",
+      "vague": "N_Obj_RealBusy_OfferReschedule",
+      "default": "N_Obj_RealBusy_OfferReschedule"
+    }
+  },
+  "N_Obj_RealBusy_StateRemainingTimeAndWrapUp": {
+    "goal": "Acknowledge the meeting timeframe, state the calculated remaining time, and signal intent to quickly wrap up.",
+    "context": "Entered from N_Obj_RealBusy_AskMeetingTime after prospect provided their meeting timeframe.",
+    "script": "Okay. That means we have [Calculated_Remaining_Time, e.g., 'about 5 minutes'] then. Let me wrap this up for you...",
+    "transitions": {
+      "default": "N_Opener_StackingIncomeHook_V3_CreativeTactic"
+    }
+  },
+  "N_Obj_RealBusy_OfferReschedule": {
+    "goal": "If the prospect indicates no time *now*, acknowledge and ask when would be a better time to talk later.",
+    "context": "Entered if prospect confirms no time now.",
+    "script": "No problem. When will be a better time to talk later?",
+    "transitions": {
+      "default": "N_Obj_RealBusy_ConfirmRescheduleTime"
+    }
+  },
+  "N_Obj_RealBusy_ConfirmRescheduleTime": {
+    "goal": "Reiterate the exact reschedule time the prospect offered and ask for 100% confirmation.",
+    "context": "Entered from N_Obj_RealBusy_OfferReschedule after the prospect suggested a reschedule time.",
+    "script": "So what you are saying is that you will be 100% available at [EXACT TIME PROSPECT OFFERED]?",
+    "transitions": {
+      "confirmed": "N_Obj_RealBusy_StateCallbackAndTeaseGuarantees",
+      "default": "N_Obj_RealBusy_StateCallbackAndTeaseGuarantees"
+    }
+  },
+  "N_Obj_RealBusy_StateCallbackAndTeaseGuarantees": {
+    "goal": "Confirm the AI will call back at the agreed time, tease the 3 guarantees, and ask if exploring them would be worthwhile.",
+    "context": "Entered from N_Obj_RealBusy_ConfirmRescheduleTime after prospect confirmed 100% availability.",
+    "script": "Great. I'll call you back at [CONFIRMED TIME]. Btw keep in mind... we have 3 guarantees because this really does work... and one guarantee is an ROI guarantee, which means it's about getting your money back. Would that be something worth exploring?",
+    "transitions": {
+      "worth_exploring": "N_ConfirmCommitment_FinalCheck_V1_Adaptive",
+      "default": "N_ConfirmCommitment_FinalCheck_V1_Adaptive"
+    }
+  },
+  "N500A_ProposeDeeperDive_V5_Adaptive": {
+    "goal": "To confidently affirm that we can help {{customer_name}}, propose scheduling a deeper dive call as the clear next step, and then secure their agreement.",
+    "context": "You are entering this node after a positive interaction where the user has shown readiness.",
+    "script": "Okay, that's excellent. I definitely feel like we can help you with that. What we need to do is set up another call that'll be a deeper dive into your situation. Sound good?",
+    "transitions": {
+      "agrees": "N500B_AskTimezone_V2_FullyTuned",
+      "default": "N500B_AskTimezone_V2_FullyTuned"
+    }
+  },
+  "N500B_AskTimezone_V2_FullyTuned": {
+    "goal": "To positively acknowledge the user's agreement to schedule a call and then efficiently and conversationally ask for their timezone.",
+    "context": "You are entering this node after {{customer_name}} has agreed to schedule the deeper dive call.",
+    "script": "Gotcha. And just so I've got it right for our scheduling, what timezone are you in?",
+    "transitions": {
+      "default": "N_AskForCallbackRange_V1_Adaptive"
+    }
+  },
+  "N_AskForCallbackRange_V1_Adaptive": {
+    "goal": "To determine a time range when the user is available at their desk and focused for a callback.",
+    "script": "Okay. And when are you typically back at your desk during the day. What's a good time range for you?",
+    "transitions": {
+      "default": "N_Scheduling_AskTime_V2_SmartAmbiguity"
+    }
+  },
+  "N_Scheduling_AskTime_V2_SmartAmbiguity": {
+    "goal": "To ask for a preferred appointment time and intelligently handle AM/PM ambiguity.",
+    "script": "Okay, great! And when would be a good time for us to schedule that call?",
+    "transitions": {
+      "default": "N_ConfirmVideoCallEnvironment_V1_Adaptive"
+    }
+  },
+  "N_ConfirmVideoCallEnvironment_V1_Adaptive": {
+    "goal": "To confirm that the user will be able to join the Zoom video call from their computer at the scheduled time.",
+    "script": "Okay, great. And just to confirm, the meeting is via Zoom, so does that time work for you to join the video call from your computer?",
+    "transitions": {
+      "confirmed": "N206_AskAboutPartners_IfFinanciallyQualified",
+      "default": "N206_AskAboutPartners_IfFinanciallyQualified"
+    }
+  },
+  "N206_AskAboutPartners_IfFinanciallyQualified": {
+    "goal": "Ask the final initial qualification question about whether any other decision-makers would be involved.",
+    "script": "I don't think I asked, but um is there anyone else that'd be involved in your business, like a spouse or other business partners?",
+    "transitions": {
+      "partner": "N018_ConfirmPartnerAvailability",
+      "no_partner": "N_ConfirmCommitment_FinalCheck_V1_Adaptive",
+      "default": "N_ConfirmCommitment_FinalCheck_V1_Adaptive"
+    }
+  },
+  "N018_ConfirmPartnerAvailability": {
+    "goal": "Determine if there are partners involved in this.",
+    "context": "Entered after the prospect has agreed to a specific time slot and a partner is known to exist.",
+    "script": "Ok cool. So can {{partner_reference}} 100% be on the call at {{chosen_time_with_ampm}} on {{chosen_day}}?",
+    "transitions": {
+      "available": "N_ConfirmCommitment_FinalCheck_V1_Adaptive",
+      "not_available": "N_Scheduling_RescheduleAndHandle_V5_FullyTuned",
+      "unsure": "N017D_SuggestPartnerCheck_ScheduleFollowUpCall",
+      "default": "N_ConfirmCommitment_FinalCheck_V1_Adaptive"
+    }
+  },
+  "N017D_SuggestPartnerCheck_ScheduleFollowUpCall": {
+    "goal": "When a prospect is unsure of their partner's availability, ask when they can find out, and then propose a brief follow-up call.",
+    "context": "Entered because the prospect stated they don't know the other decision-maker's schedule.",
+    "script_part1": "[Acknowledge uncertainty]. When's the soonest you can get in touch with them to find out if that time works?",
+    "script_part2": "[Acknowledge timeframe]. So here's what we're gonna do then. I want you to talk to your [partner] and find out what time will work for the both of you. Then around [suggested follow-up time] I'll give you a quick ring and we'll lock in an official time on the calendar. Sound fair?",
+    "transitions": {
+      "default": "N_ConfirmCommitment_FinalCheck_V1_Adaptive"
+    }
+  },
+  "N_AskAboutReminderSetup_V1_Adaptive": {
+    "goal": "To ask the user if they know how to set a reminder on their phone.",
+    "script": "Okay, great. When you see that text message, it's going to ask you to set up a reminder. Do you know how to set up a reminder on your phone?",
+    "transitions": {
+      "default": "N_CheckForTextReceipt_V1_Adaptive"
+    }
+  },
+  "N_CheckForTextReceipt_V1_Adaptive": {
+    "goal": "To confirm the user has successfully received the confirmation text message.",
+    "script": "Okay, that text should be on its way to you now. Did that come through on your end yet?",
+    "transitions": {
+      "received": "N_ConfirmAndRequestReply_V4_PatientListener",
+      "default": "N_ConfirmAndRequestReply_V4_PatientListener"
+    }
+  },
+  "N_ConfirmAndRequestReply_V4_PatientListener": {
+    "goal": "To get the user to reply to the confirmation text with the specific phrase, 'Confirmed, I'll see you there,' right now.",
+    "script": "Great. Go ahead and respond to that message with the words, Confirmed, I'll see you there. I'll wait for you to do that now.",
+    "transitions": {
+      "default": "N_Video_Assign_GentleIntro_V3_FullyTuned"
+    }
+  },
+  "N_Video_Assign_GentleIntro_V3_FullyTuned": {
+    "goal": "To clearly introduce the 12-minute overview video, explain its benefit, and secure the user's agreement to watch it.",
+    "script_step1": "Gotcha, {customer_name}, you're all set. Just one quick thing before your call that Kendrick likes everyone to do. There's a short 12-minute video that's just a good overview, so you've got the basics down and can really dive deep with him. Make sense?",
+    "script_step2": "Great. So if I send that over when we hang up, are you able to give that a quick watch then?",
+    "transitions": {
+      "agrees": "N_Video_ReinforceValue_FeeContext_V3_FullyTuned",
+      "default": "N_Video_ReinforceValue_FeeContext_V3_FullyTuned"
+    }
+  },
+  "N_Video_ReinforceValue_FeeContext_V3_FullyTuned": {
+    "goal": "To reinforce the importance of the pre-call video by clearly stating the value of Kendrick's time and confirming the fee is waived.",
+    "script": "Perfect. Yeah, it really helps make that next call super valuable. Kendrick's time is usually set at a thousand dollars for these strategy sessions, but since you'll have seen the overview, that fee is completely waived for you. All good on that front?",
+    "transitions": {
+      "default": "N_Video_RelateSocialProof_Part2_LogicHook_V3_Checkpoint"
+    }
+  },
+  "N_Video_RelateSocialProof_Part2_LogicHook_V3_Checkpoint": {
+    "goal": "To provide the clear, logical reason why the 12-minute video is essential.",
+    "script": "And because we're talking about that kind of scale, that 12-minute video just makes sure you're fully in the loop before you and Kendrick discuss your specific situation, you know?",
+    "transitions": {
+      "default": "N_Video_AssignAndCommit_V1_FullyTuned"
+    }
+  },
+  "N_Video_AssignAndCommit_V1_FullyTuned": {
+    "goal": "To secure a direct commitment from {{customer_name}} to watch the overview video immediately after the call.",
+    "script": "Okay, great. So if I send you that video right after we hang up, are you able to give it a quick watch now?",
+    "transitions": {
+      "commits": "N_Video_ConfirmAndReply_V1_Adaptive",
+      "default": "N_Video_ConfirmAndReply_V1_Adaptive"
+    }
+  },
+  "N_Video_ConfirmAndReply_V1_Adaptive": {
+    "goal": "To get the user to reply to the confirmation text with the word 'Got it' right now.",
+    "script": "Okay, perfect. Matter of fact, I'm sending that link to your phone right now. Could you do me a favor and just reply 'Got it' so I know you received the link?",
+    "transitions": {
+      "default": "N_Finalize_And_EndCall_V1_Adaptive"
+    }
+  },
+  "N_Finalize_And_EndCall_V1_Adaptive": {
+    "goal": "To deliver the final, critical instruction about replying to the text to avoid cancellation, and then to professionally and warmly end the call.",
+    "script": "Alright, you're all set then. The last and most important step is just to reply to that text. If you don't, our system will automatically cancel the appointment to open up the slot. So please make sure you get that done. Have a great day, and take care.",
+    "transitions": {
+      "default": "N_EndCall_Final_V2_Decisive"
+    }
+  },
+  "N_EndCall_Final_V2_Decisive": {
+    "goal": "To deliver a final, professional closing statement and then terminate the call.",
+    "script": "Okay, perfect. You are all set then, {{customer_name}}. I've just sent that confirmation email over to you. Have a great rest of your day. Goodbye.",
+    "transitions": {
+      "default": "EndCall"
+    }
+  }
+}
