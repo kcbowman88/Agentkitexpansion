@@ -256,7 +256,6 @@ class ResponseOrchestrator:
     def __init__(self, call_flow_state: CallFlowState, conversation_state_manager: ConversationStateManager, kb_processor: Optional[Any] = None):
         self.call_flow_state = call_flow_state
         self.conversation_state_manager = conversation_state_manager
-        self.state_manager = conversation_state_manager
         self.strategy_tracker = StrategyTracker(conversation_state_manager)
         self.transition_evaluator = TransitionEvaluator(self.call_flow_state)
         self.context_integrator = ContextIntegrator()
