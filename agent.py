@@ -5,7 +5,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from livekit import agents, rtc
-from livekit.agents import (AgentSession, RoomInputOptions, AgentStateChangedEvent)
+from livekit.agents import (AgentSession, RoomInputOptions, AgentStateChangedEvent, llm)
 from livekit.plugins import (
     openai,
     elevenlabs,
@@ -58,14 +58,18 @@ async def entrypoint(ctx: agents.JobContext):
 
     agent = NewCallFlowAgent()
 
+    # Use synchronous wrappers for event handlers, as required by the SDK
     @session.on("user_turn_completed")
-    async def on_user_turn_completed(turn_ctx: agents.llm.ChatContext, new_message: agents.llm.ChatMessage):
-        await agent.on_user_turn_completed(turn_ctx, new_message)
+    def on_user_turn_completed_sync(turn_ctx: llm.ChatContext, new_message: llm.ChatMessage):
+        async def handle_async():
+            await agent.on_user_turn_completed(turn_ctx, new_message)
+        asyncio.create_task(handle_async())
 
     @session.on("agent_started")
-    async def on_agent_started(ev: AgentStateChangedEvent):
-        # Pass the session to the agent's on_enter method
-        await agent.on_enter(session)
+    def on_agent_started_sync(ev: AgentStateChangedEvent):
+        async def handle_async():
+            await agent.on_enter(session)
+        asyncio.create_task(handle_async())
 
 
     logging.info("Starting AgentSession with the new engine...")
