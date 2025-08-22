@@ -19,8 +19,6 @@ from state_manager import CallFlowState
 from caller_agent import CallFlowAgent
 from pivot_controller import pivot_controller # Import pivot_controller
 
-load_dotenv()
-
 # Set up logging to DEBUG level for detailed output
 logging.basicConfig(level=logging.DEBUG)
 
@@ -29,6 +27,7 @@ logging.basicConfig(level=logging.DEBUG)
 TURN_DETECTION_MODE = os.getenv("TURN_DETECTION_MODE", "auto")
 
 async def entrypoint(ctx: agents.JobContext):
+    load_dotenv()
     # Initialize state with a default customer name if not provided
     customer_name = os.getenv("CUSTOMER_NAME", "John")
     state = CallFlowState(customer_name=customer_name)

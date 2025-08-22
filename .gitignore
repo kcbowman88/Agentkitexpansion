@@ -1,0 +1,18 @@
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
