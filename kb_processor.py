@@ -294,7 +294,7 @@ class KBProcessor:
         try:
             # Check if PDF file exists
             if not os.path.exists(self.pdf_path):
-                logging.error(f"PDF file not found: {self.pdf_path}")
+                logging.warning(f"Knowledge base PDF not found at {self.pdf_path}. KB functionality will be disabled.")
                 return
             
             # Create data directory if it doesn't exist

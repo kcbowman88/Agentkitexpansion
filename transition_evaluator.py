@@ -57,7 +57,7 @@ Now, analyze the user's statement and provide the JSON response.
 User statement: "{user_input}"
 """
         
-        chat = [llm.ChatMessage(role=llm.ChatRole.SYSTEM, content=prompt)]
+        chat = [llm.ChatMessage(role=llm.ChatRole.system, content=prompt)]
         
         try:
             response = await llm_instance.chat(chat)

@@ -1,0 +1,1 @@
+Please place the knowledge base PDF file (e.g., dan_in_ippei_and_company_info.pdf) in this directory.
