@@ -1,12 +1,13 @@
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, Type, Any
+from typing import Optional, Type, Any, AsyncIterable
 from enum import Enum
 import time
 import asyncio # Ensure asyncio is imported
 import re
 
 from livekit.agents import Agent, function_tool, RunContext, llm
+from livekit import rtc
 from call_flow import CALL_FLOW
 # Provide a patchable proxy for CALL_FLOW to satisfy tests that patch caller_agent.nodes.get
 class _NodesProxy:
@@ -20,7 +21,7 @@ class _NodesProxy:
 # Wrap imported CALL_FLOW dict
 nodes = _NodesProxy(CALL_FLOW)
 from global_prompt import GLOBAL_PROMPT
-from transition_evaluator import LLMTransitionEvaluator
+from transition_evaluator import IntentAndTransitionEvaluator
 from disc_classifier import DISCClassifier, DISCProfile
 from state_manager import CallFlowState
 from conversation_state_manager import ConversationStateManager, StrategyType
@@ -137,7 +138,7 @@ class CallFlowAgentV2(Agent):
         self.kb_processor = KBProcessor()
         self.conversation_state_manager = ConversationStateManager()
         self.script_tracker = NodeScriptTracker()
-        self.transition_evaluator = LLMTransitionEvaluator()
+        self.intent_evaluator = IntentAndTransitionEvaluator()
         self._session = None
         logging.info("CallFlowAgentV2 initialized.")
         
@@ -398,7 +399,6 @@ class CallFlowAgentV2(Agent):
     async def on_user_turn_completed(self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> None:
         try:
             user_input = str(new_message.content) if new_message.content else ""
-            logging.debug(f"on_user_turn_completed: Received user input: '{user_input}'")
             if not user_input:
                 logging.warning("No user input received.")
                 return
@@ -411,52 +411,55 @@ class CallFlowAgentV2(Agent):
                 logging.error(f"Node '{state.current_node_id}' not found. Aborting.")
                 return
 
-            # 1. Check for a transition
+            # 1. Analyze user input for multiple intents
             transitions = current_node_data.get("transitions", [])
-            target_node_id = await self.transition_evaluator.evaluate(user_input, transitions, self.llm)
+            intents = await self.intent_evaluator.evaluate(user_input, transitions, self.llm)
 
-            if target_node_id:
-                logging.info(f"Transitioning from '{state.current_node_id}' to '{target_node_id}' based on user input.")
-                await self._transition_to_node(target_node_id)
-                await self.on_enter()
-                return
+            question = intents.get("question")
+            objection = intents.get("objection")
+            transition_target = intents.get("transition_target")
 
-            # 2. If no transition, handle as an interruption/objection
-            logging.info(f"No transition found. Treating as interruption/objection in node '{state.current_node_id}'.")
+            # 2. Prioritize handling questions and objections before transitions
+            handled_interruption = False
+            interruption_input = question or objection
+            if interruption_input and interruption_input.lower() != "none":
+                logging.info(f"Handling interruption: Question='{question}', Objection='{objection}'")
 
-            # 2a. Special handling for KB nodes
-            if "N_KB_Q&A" in state.current_node_id:
-                kb_answer = self.kb_processor.search(user_input)
-                if kb_answer:
-                    logging.info("Found answer in KB.")
-                    await self._speak_and_log_utterance(kb_answer, state, is_objection=True)
-                    # After answering, the user might have another question or be ready to move on.
-                    # The next turn will be handled by this same method.
-                    return
+                response_text = ""
+                # Prioritize KB for questions in Q&A nodes
+                if question and "N_KB_Q&A" in state.current_node_id:
+                    response_text = self.kb_processor.search(question)
 
-            # 2b. If not a KB answer, use the Strategic Toolkit
-            toolkits = ["strategic_toolkit", "one_shot_objection_handling", "flexible_objection_handling_protocol", "dynamic_interruption_protocol"]
-            strategic_toolkit = []
-            for key in toolkits:
-                if key in current_node_data:
-                    strategic_toolkit = current_node_data[key]
-                    break
+                # If KB didn't answer, use the strategic toolkit
+                if not response_text:
+                    toolkits = ["strategic_toolkit", "one_shot_objection_handling", "flexible_objection_handling_protocol", "dynamic_interruption_protocol"]
+                    strategic_toolkit = []
+                    for key in toolkits:
+                        if key in current_node_data:
+                            strategic_toolkit = current_node_data[key]
+                            break
+                    tactic = await self._find_tactic(interruption_input, strategic_toolkit, self.llm)
+                    if tactic and "agent_says" in tactic:
+                        response_text = tactic.get("agent_says")
 
-            tactic = await self._find_tactic(user_input, strategic_toolkit, self.llm)
+                # Fallback response if no other handler worked
+                if not response_text:
+                    response_text = "That's a good point. Let me get back to that in a moment."
 
-            response_text = ""
-            if tactic and "agent_says" in tactic:
-                response_text = tactic.get("agent_says")
-            else:
-                # Fallback to a catch-all if no specific tactic is found
-                catch_all_tactic = next((t for t in strategic_toolkit if t.get("name", "").lower().startswith("catchall")), None)
-                if catch_all_tactic and "agent_says" in catch_all_tactic:
-                    response_text = catch_all_tactic.get("agent_says")
-                else:
-                    logging.warning(f"No matching tactic or catch-all found for input '{user_input}' in node '{state.current_node_id}'.")
-                    response_text = "I'm sorry, I didn't quite catch that. Could you say that again?"
+                await self._speak_and_log_utterance(response_text, state, is_objection=True)
+                handled_interruption = True
 
-            await self._speak_and_log_utterance(response_text, state, is_objection=True)
+            # 3. Proceed with transition if one was identified
+            if transition_target and transition_target.lower() != "none":
+                # If we handled an interruption, we might want to add a small pause or confirming phrase
+                # before transitioning, but for now we'll transition directly.
+                logging.info(f"Transitioning from '{state.current_node_id}' to '{transition_target}' based on user intent.")
+                await self._transition_to_node(transition_target)
+                # The on_enter for the new node will be called, speaking its script.
+                # We suppress the script if we just spoke an interruption response.
+                await self.on_enter(suppress_script=handled_interruption)
+
+            # If no transition and no interruption, the agent waits for the next user input.
 
         except Exception as e:
             logging.error(f"CRITICAL: Unhandled error in on_user_turn_completed: {e}", exc_info=True)
@@ -570,4 +573,4 @@ Analyze the user's statement and choose the single best tactic from the list. Re
             return Agent.default.tts_node(self, original_stream(), model_settings)
 
 # Back-compat alias for legacy tests expecting `CallerAgent`
-CallerAgent = CallFlowAgentV2
+CallFlowAgent = CallFlowAgentV2

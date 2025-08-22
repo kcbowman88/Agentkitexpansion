@@ -1,18 +1,19 @@
 import logging
 from typing import Optional, List, Dict
 from livekit.agents import llm
+import json
 
-class LLMTransitionEvaluator:
+class IntentAndTransitionEvaluator:
     def __init__(self):
-        logging.info("LLMTransitionEvaluator initialized.")
+        logging.info("IntentAndTransitionEvaluator initialized.")
 
-    async def evaluate(self, user_input: str, transitions: List[Dict], llm_instance: llm.LLM) -> Optional[str]:
+    async def evaluate(self, user_input: str, transitions: List[Dict], llm_instance: llm.LLM) -> Dict:
         """
-        Evaluates the user input against the possible transitions for the current node
-        using an LLM to determine the most likely transition.
+        Analyzes the user's input to identify both a potential transition and other intents
+        like questions or objections. Returns a dictionary of intents.
         """
         if not transitions:
-            return None
+            return {}
 
         # Format the transitions for the prompt
         formatted_transitions = "{\n"
@@ -20,45 +21,60 @@ class LLMTransitionEvaluator:
             name = t.get("name", "Unknown")
             condition = t.get("condition", "No condition specified.")
             target = t.get("target", "None")
-            # Ensure the condition is a clean, single-line string for the prompt
             condition_cleaned = ' '.join(condition.split())
             formatted_transitions += f'  "{target}": "{name}: {condition_cleaned}",\n'
         formatted_transitions += "}"
 
         prompt = f"""
-You are an expert at understanding conversational flow. Your task is to determine the next step in a conversation based on the user's most recent statement.
+You are an expert at understanding conversational nuance. Your task is to analyze a user's statement and break it down into its core intents.
 
 The user just said: "{user_input}"
 
-Based on this, which of the following transitions should be taken?
+1.  **Transition Intent:** Does the user's statement match one of the following transition conditions? If yes, identify the target node ID. If no clear match, use "None".
+    {formatted_transitions}
 
-Here are the possible transitions and their conditions:
-{formatted_transitions}
+2.  **Question Intent:** Did the user ask a specific question? If so, what is the question? If not, use "None".
 
-Analyze the user's statement and choose the single best transition from the list above. Respond with ONLY the target node ID (e.g., "N_IntroduceModel_And_AskQuestions_V3_Adaptive"). If none of the conditions are clearly met, respond with the word "None".
+3.  **Objection Intent:** Did the user raise an objection or express a concern? If so, what is the objection? If not, use "None".
+
+Please provide your analysis in a JSON object with the following keys: "transition_target", "question", "objection".
+
+Example for "Yeah, that sounds good, but how much does it cost?":
+{{
+  "transition_target": "N_SomeNode_Positive",
+  "question": "how much does it cost?",
+  "objection": "None"
+}}
+
+Example for "I'm not sure, it sounds a bit complicated.":
+{{
+  "transition_target": "None",
+  "question": "None",
+  "objection": "it sounds a bit complicated"
+}}
+
+Now, analyze the user's statement and provide the JSON response.
+User statement: "{user_input}"
 """
         
-        chat = [
-            llm.ChatMessage(
-                role=llm.ChatRole.SYSTEM,
-                content=prompt,
-            )
-        ]
+        chat = [llm.ChatMessage(role=llm.ChatRole.SYSTEM, content=prompt)]
         
         try:
-            # Use a non-streaming call for a single, complete response
             response = await llm_instance.chat(chat)
             response_text = response.choices[0].message.content.strip()
 
-            # Check if the response is a valid target node ID
-            valid_targets = [t.get("target") for t in transitions]
-            if response_text in valid_targets:
-                logging.info(f"LLM chose transition to: {response_text}")
-                return response_text
-            else:
-                logging.info(f"LLM responded with '{response_text}', which is not a valid target or is 'None'. No transition taken.")
-                return None
+            # Clean the response to ensure it's valid JSON
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+
+            intents = json.loads(response_text)
+            logging.info(f"LLM identified intents: {intents}")
+            return intents
 
         except Exception as e:
-            logging.error(f"Error during LLM call in TransitionEvaluator: {e}")
-            return None
+            logging.error(f"Error during LLM call or JSON parsing in IntentAndTransitionEvaluator: {e}")
+            # Return a default object that won't cause a crash
+            return {"transition_target": None, "question": None, "objection": None}
