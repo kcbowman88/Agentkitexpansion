@@ -11,6 +11,7 @@ langchain-openai
 requests
 python-dotenv
 deepgram-sdk
+livekit-plugins-deepgram
 faiss-cpu
 openai
 pypdf

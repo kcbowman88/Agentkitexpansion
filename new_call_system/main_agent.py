@@ -10,15 +10,19 @@ class NewCallFlowAgent(agents.Agent):
     The LiveKit Agent that integrates with the new ConversationEngine.
     """
     def __init__(self):
-        super().__init__()
+        # Add the required 'instructions' argument to the super().__init__() call.
+        super().__init__(instructions="You are a helpful voice assistant.")
+        self.engine: Optional[ConversationEngine] = None
         self.session = None
 
-    async def on_enter(self):
+
+    async def on_enter(self, session):
         """
         Called when the agent joins the call.
         Initializes the state and engine, and starts the conversation.
         """
         try:
+            self.session = session
             # 1. Initialize State
             # In a real app, customer_name would come from context or a database.
             customer_name = "John"
@@ -28,7 +32,6 @@ class NewCallFlowAgent(agents.Agent):
             )
 
             # 2. Initialize Engine
-            # We need to pass the agent session to the engine so nodes can speak.
             self.engine = ConversationEngine(initial_state, self.session)
 
             # 3. Start the conversation
