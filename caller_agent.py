@@ -6,7 +6,7 @@ import time
 import asyncio # Ensure asyncio is imported
 import re
 
-from livekit.agents import Agent, function_tool, RunContext, llm
+from livekit.agents import Agent, function_tool, RunContext, llm, ModelSettings
 from livekit import rtc
 from call_flow import CALL_FLOW
 # Provide a patchable proxy for CALL_FLOW to satisfy tests that patch caller_agent.nodes.get
@@ -539,7 +539,7 @@ Analyze the user's statement and choose the single best tactic from the list. Re
         except Exception as e:
             logging.error(f"Unexpected error in _transition_to_node: {e}", exc_info=True)
 
-    async def tts_node(self, text_stream: AsyncIterable[str], model_settings: llm.ModelSettings) -> AsyncIterable[rtc.AudioFrame]:
+    async def tts_node(self, text_stream: AsyncIterable[str], model_settings: ModelSettings) -> AsyncIterable[rtc.AudioFrame]:
         """
         Custom TTS node to handle SSML tags.
         """
