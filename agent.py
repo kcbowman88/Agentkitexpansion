@@ -58,17 +58,12 @@ async def entrypoint(ctx: agents.JobContext):
 
     agent = NewCallFlowAgent()
 
-    # Use synchronous wrappers for event handlers, as required by the SDK
+    # The on_enter hook on the agent is called automatically by the framework.
+    # We only need to handle the user turn completion here.
     @session.on("user_turn_completed")
     def on_user_turn_completed_sync(turn_ctx: llm.ChatContext, new_message: llm.ChatMessage):
         async def handle_async():
             await agent.on_user_turn_completed(turn_ctx, new_message)
-        asyncio.create_task(handle_async())
-
-    @session.on("agent_started")
-    def on_agent_started_sync(ev: AgentStateChangedEvent):
-        async def handle_async():
-            await agent.on_enter(session)
         asyncio.create_task(handle_async())
 
 

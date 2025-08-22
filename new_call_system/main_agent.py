@@ -14,13 +14,12 @@ class NewCallFlowAgent(agents.Agent):
     def __init__(self):
         super().__init__(instructions="You are a helpful voice assistant.")
         self.engine: Optional[ConversationEngine] = None
-        # self.session = None # This line caused the AttributeError and has been removed.
-        # The session is a read-only property managed by the framework.
 
-    async def on_enter(self, session):
+    async def on_enter(self):
         """
-        Called when the agent joins the call.
+        Called by the framework when the agent joins the call.
         Initializes the state and engine, and starts the conversation.
+        The 'session' is available as self.session after the agent is started.
         """
         try:
             # 1. Initialize State
@@ -30,8 +29,8 @@ class NewCallFlowAgent(agents.Agent):
                 current_node_id="N001A_NameConfirmation_Only" # Starting node
             )
 
-            # 2. Initialize Engine, passing the session received here.
-            self.engine = ConversationEngine(initial_state, session)
+            # 2. Initialize Engine, using self.session.
+            self.engine = ConversationEngine(initial_state, self.session)
 
             # 3. Start the conversation
             logging.info("Starting new conversation engine...")
