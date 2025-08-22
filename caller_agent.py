@@ -7,7 +7,7 @@ import asyncio # Ensure asyncio is imported
 import re
 
 from livekit.agents import Agent, function_tool, RunContext, llm
-from call_flow_v2 import CALL_FLOW
+from call_flow import CALL_FLOW
 # Provide a patchable proxy for CALL_FLOW to satisfy tests that patch caller_agent.nodes.get
 class _NodesProxy:
     def __init__(self, backing):
@@ -20,7 +20,7 @@ class _NodesProxy:
 # Wrap imported CALL_FLOW dict
 nodes = _NodesProxy(CALL_FLOW)
 from global_prompt import GLOBAL_PROMPT
-from transition_evaluator_v2 import LLMTransitionEvaluator
+from transition_evaluator import LLMTransitionEvaluator
 from disc_classifier import DISCClassifier, DISCProfile
 from state_manager import CallFlowState
 from conversation_state_manager import ConversationStateManager, StrategyType
