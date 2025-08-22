@@ -1,1 +1,0 @@
-print(int("aeb134aa89cb3d40", 16) % 4)

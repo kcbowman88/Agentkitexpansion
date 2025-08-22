@@ -7,7 +7,7 @@ import asyncio # Ensure asyncio is imported
 import re
 
 from livekit.agents import Agent, function_tool, RunContext, llm
-from call_flow_v2 import CALL_FLOW
+from call_flow import CALL_FLOW
 # Provide a patchable proxy for CALL_FLOW to satisfy tests that patch caller_agent.nodes.get
 class _NodesProxy:
     def __init__(self, backing):
@@ -20,8 +20,13 @@ class _NodesProxy:
 # Wrap imported CALL_FLOW dict
 nodes = _NodesProxy(CALL_FLOW)
 from global_prompt import GLOBAL_PROMPT
-from transition_evaluator_v2 import LLMTransitionEvaluator
+from transition_evaluator import TransitionEvaluator
 from disc_classifier import DISCClassifier, DISCProfile
+from generative_objection_handler import (
+    generate_objection_response,
+    GenerativeObjectionContext,
+    ResponseOrchestrator
+)
 from state_manager import CallFlowState
 from conversation_state_manager import ConversationStateManager, StrategyType
 from node_script_tracker import NodeScriptTracker
@@ -130,21 +135,21 @@ def finalize_agent_text(state, text: str, *, is_objection: bool = False) -> str:
 
 
 # --- The Unified Call Flow Agent ---
-class CallFlowAgentV2(Agent):
+class CallFlowAgent(Agent):
     def __init__(self, initial_state: CallFlowState, instructions: str = ""):
         super().__init__(instructions=instructions)
         self.disc_classifier = DISCClassifier()
         self.kb_processor = KBProcessor()
         self.conversation_state_manager = ConversationStateManager()
+        self.response_orchestrator = ResponseOrchestrator(initial_state, self.conversation_state_manager, self.kb_processor)
         self.script_tracker = NodeScriptTracker()
-        self.transition_evaluator = LLMTransitionEvaluator()
         self._session = None
-        logging.info("CallFlowAgentV2 initialized.")
-        
+        logging.info("CallFlowAgent initialized with new, simplified logic.")
+
     @property
     def session(self):
         return self._session
-    
+
     @session.setter
     def session(self, value):
         self._session = value
@@ -160,10 +165,10 @@ class CallFlowAgentV2(Agent):
             if not say_fn:
                 logging.error("Session.say not available")
                 return False
-            
+
             # Register every bot utterance for pivot tracking
             pivot_controller.register_bot_utterance(text, state.current_node_id)
-            
+
             await say_fn(text, allow_interruptions=True)
             return True
         except asyncio.CancelledError:
@@ -189,7 +194,7 @@ class CallFlowAgentV2(Agent):
             if USE_GENERATIVE_OBJECTION_HANDLER and t.endswith("?"):
                 # Just ensure it's clean and return as is
                 return t
-            
+
             # For other cases (e.g., hardcoded scripts, or if generative handler didn't end with a question)
             # apply the original compliance logic.
             if not will_transition and not t.endswith("?"):
@@ -215,13 +220,13 @@ class CallFlowAgentV2(Agent):
     def _analyze_sentiment(self, text: str) -> float:
         positive_words = ["good", "great", "excellent", "amazing", "interested", "curious", "happy", "excited"]
         negative_words = ["bad", "terrible", "awful", "hate", "dislike", "not interested", "sad", "frustrated"]
-        
+
         text_lower = text.lower()
-        
+
         # Word-based analysis
         positive_count = sum(1 for word in positive_words if word in text_lower)
         negative_count = sum(1 for word in negative_words if word in text_lower)
-        
+
         # Simple negation handling
         if "not" in text_lower and "happy" in text_lower:
             negative_count += 1
@@ -238,7 +243,7 @@ class CallFlowAgentV2(Agent):
         total_emotional_words = positive_count + negative_count
         if total_emotional_words == 0:
             return 0.0
-            
+
         score = (positive_count - negative_count) / total_emotional_words
         return max(-1.0, min(1.0, score))
 
@@ -284,7 +289,7 @@ class CallFlowAgentV2(Agent):
             processed_utterance = processed_utterance.replace("{{customer_name}}", state.customer_name)
 
         final_utterance = finalize_agent_text(state, processed_utterance, is_objection=is_objection)
-        
+
         if not final_utterance:
             return True
 
@@ -318,51 +323,12 @@ class CallFlowAgentV2(Agent):
             else:
                 # Interrupted
                 break
-    
-    def _get_node_script(self, node_data: dict) -> list[str]:
-        """
-        Gets the script to be spoken from a node, handling various possible structures.
-        """
-        if not node_data:
-            return []
-
-        # Order of preference for finding the script
-        if "agent_says" in node_data:
-            script = node_data["agent_says"]
-            return [script] if isinstance(script, str) else script
-
-        if "speak_script" in node_data:
-            script = node_data["speak_script"]
-            return [script] if isinstance(script, str) else script
-
-        if "speech_output" in node_data and "script" in node_data["speech_output"]:
-            script = node_data["speech_output"]["script"]
-            return [script] if isinstance(script, str) else script
-
-        if "opening_gambit" in node_data and "agent_says" in node_data["opening_gambit"]:
-            script = node_data["opening_gambit"]["agent_says"]
-            return [script] if isinstance(script, str) else script
-
-        # Handle multi-step scripts which are common in the new structure
-        scripts = []
-        if "part_1" in node_data and "agent_says" in node_data["part_1"]:
-             scripts.append(node_data["part_1"]["agent_says"])
-        if "part_2" in node_data and "agent_says" in node_data["part_2"]:
-             scripts.append(node_data["part_2"]["agent_says"])
-        if "step_1" in node_data and "agent_says" in node_data["step_1"]:
-            scripts.append(node_data["step_1"]["agent_says"])
-        if "step_2" in node_data and "agent_says" in node_data["step_2"]:
-            scripts.append(node_data["step_2"]["agent_says"])
-        if scripts:
-            return scripts
-
-        return []
 
     async def on_enter(self, suppress_script: bool = False):
         try:
             state: CallFlowState = self.session.userdata
-            current_node_data = nodes.get(state.current_node_id)
-            if not current_node_data:
+            current_node = nodes.get(state.current_node_id)
+            if not current_node:
                 logging.error(f"Node '{state.current_node_id}' not found. Closing session.")
                 await self.session.close()
                 return
@@ -373,24 +339,17 @@ class CallFlowAgentV2(Agent):
                 logging.info(f"Script suppressed for node {state.current_node_id} by transition directive.")
                 return
 
-            # Use the new helper to get the script
-            speak_script_segments = self._get_node_script(current_node_data)
-
-            if speak_script_segments:
-                for segment in speak_script_segments:
-                    # Replace placeholders like {{customer_name}}
-                    try:
-                        if state.customer_name:
-                             segment = segment.replace("{{customer_name}}", state.customer_name)
-                    except Exception:
-                        pass
-
-                    spoken_completely = await self._speak_and_log_utterance(segment, state)
-                    if not spoken_completely:
-                        logging.warning(f"Interrupted while speaking segment in node {state.current_node_id}. Halting on_enter script.")
-                        break # Stop speaking if interrupted
+            if self.script_tracker.should_speak_script(state.current_node_id):
+                speak_script_segments = current_node.get("speak_script", [])
+                if speak_script_segments and isinstance(speak_script_segments, list):
+                    self.script_tracker.register_script(state.current_node_id, speak_script_segments)
+                    await self._speak_node_script(state)
+                else:
+                    logging.info(f"Node {state.current_node_id} has empty or no speak_script; not speaking on enter.")
             else:
-                logging.info(f"Node {state.current_node_id} has no script to speak on enter.")
+                # This part for alternative responses can be refactored or removed
+                # depending on the desired behavior for revisited nodes.
+                logging.info(f"Script for node {state.current_node_id} already completed.")
 
         except Exception as e:
             logging.error(f"Error in on_enter: {e}", exc_info=True)
@@ -404,123 +363,152 @@ class CallFlowAgentV2(Agent):
                 return
 
             state: CallFlowState = self.session.userdata
-            self.conversation_state_manager.add_turn('user', user_input, state.current_node_id)
-            
-            current_node_data = nodes.get(state.current_node_id)
-            if not current_node_data:
-                logging.error(f"Node '{state.current_node_id}' not found. Aborting.")
-                return
 
-            # 1. Check for a transition
-            transitions = current_node_data.get("transitions", [])
-            target_node_id = await self.transition_evaluator.evaluate(user_input, transitions, self.llm)
+            was_interrupted = self.conversation_state_manager.pop_flag("last_agent_interrupted", False)
 
-            if target_node_id:
-                logging.info(f"Transitioning from '{state.current_node_id}' to '{target_node_id}' based on user input.")
-                await self._transition_to_node(target_node_id)
-                await self.on_enter()
-                return
-
-            # 2. If no transition, handle as an interruption/objection
-            logging.info(f"No transition found. Treating as interruption/objection in node '{state.current_node_id}'.")
-
-            # 2a. Special handling for KB nodes
-            if "N_KB_Q&A" in state.current_node_id:
-                kb_answer = self.kb_processor.search(user_input)
-                if kb_answer:
-                    logging.info("Found answer in KB.")
-                    await self._speak_and_log_utterance(kb_answer, state, is_objection=True)
-                    # After answering, the user might have another question or be ready to move on.
-                    # The next turn will be handled by this same method.
-                    return
-
-            # 2b. If not a KB answer, use the Strategic Toolkit
-            toolkits = ["strategic_toolkit", "one_shot_objection_handling", "flexible_objection_handling_protocol", "dynamic_interruption_protocol"]
-            strategic_toolkit = []
-            for key in toolkits:
-                if key in current_node_data:
-                    strategic_toolkit = current_node_data[key]
-                    break
-
-            tactic = await self._find_tactic(user_input, strategic_toolkit, self.llm)
-
-            response_text = ""
-            if tactic and "agent_says" in tactic:
-                response_text = tactic.get("agent_says")
+            if was_interrupted:
+                logging.info("Previous agent utterance was interrupted. Handling interruption.")
+                await self._handle_interruption(user_input, state)
             else:
-                # Fallback to a catch-all if no specific tactic is found
-                catch_all_tactic = next((t for t in strategic_toolkit if t.get("name", "").lower().startswith("catchall")), None)
-                if catch_all_tactic and "agent_says" in catch_all_tactic:
-                    response_text = catch_all_tactic.get("agent_says")
-                else:
-                    logging.warning(f"No matching tactic or catch-all found for input '{user_input}' in node '{state.current_node_id}'.")
-                    response_text = "I'm sorry, I didn't quite catch that. Could you say that again?"
-
-            await self._speak_and_log_utterance(response_text, state, is_objection=True)
-
+                await self._handle_user_response(user_input, state)
         except Exception as e:
-            logging.error(f"CRITICAL: Unhandled error in on_user_turn_completed: {e}", exc_info=True)
-            await self._speak_and_log_utterance("I've run into an issue. Let's try that again.", state)
+            logging.error(f"Error in on_user_turn_completed: {e}", exc_info=True)
 
-    async def _find_tactic(self, user_input: str, strategic_toolkit: list, llm_instance: llm.LLM) -> Optional[dict]:
+    async def _handle_interruption(self, user_input: str, state: CallFlowState):
         """
-        Finds the best tactic from the strategic toolkit using an LLM to match intent.
+        Handles cases where the user interrupts the agent using the
+        Adaptive Two-Turn Interruption Engine.
         """
-        if not strategic_toolkit:
-            return None
+        logging.info(f"Handling interruption with Adaptive Engine. User input: '{user_input}'")
+        state.interruption_count += 1
 
-        # Format the tactics for the prompt
-        formatted_tactics = "{\n"
-        for i, tactic in enumerate(strategic_toolkit):
-            name = tactic.get("name", f"tactic_{i}")
-            condition = tactic.get("condition", "No condition specified.")
-            condition_cleaned = ' '.join(condition.split())
-            formatted_tactics += f'  "{name}": "Condition: {condition_cleaned}",\n'
-        formatted_tactics += "}"
+        # TURN 1: DIAGNOSE, ADAPT, & RESPOND
+        # 1. Analyze the interruption
+        # TODO: Add logic to analyze interruption intent
 
-        prompt = f"""
-You are an expert at understanding conversational objections and questions. Your task is to choose the best-pre-written response tactic based on the user's statement.
+        # 2. Analyze the user's behavioral style
+        if not state.disc_profile:
+            state.disc_profile = self.disc_classifier.classify(user_input)
+            logging.info(f"Classified user DISC profile as: {state.disc_profile.name}")
 
-The user just said: "{user_input}"
+        # 3. Choose a tool (KB lookup or generative response)
+        current_node_id = state.current_node_id
+        if current_node_id not in state.tactic_history:
+            state.tactic_history[current_node_id] = []
 
-Based on this, which of the following tactics is the most appropriate response?
+        # One-Shot Tactic Logic
+        if state.interruption_count > 1 and len(state.tactic_history[current_node_id]) > 0:
+             logging.info("One-shot tactic exhausted. Escalating to global objection handler.")
+             # TODO: Implement escalation to global objection handler
+             await self._handle_user_response(user_input, state) # Placeholder
+             return
 
-Here are the available tactics and their trigger conditions:
-{formatted_tactics}
+        kb_result = self.kb_processor.search(user_input)
+        if kb_result:
+            logging.info("Found relevant information in KB.")
+            state.tactic_history[current_node_id].append("kb_search")
+            await self._speak_and_log_utterance(kb_result, state, is_objection=True)
+            return
 
-Analyze the user's statement and choose the single best tactic from the list. Respond with ONLY the name of the tactic (e.g., "TrustScamObjection"). If none of the conditions are a clear match, respond with the word "None".
-"""
+        # Fallback to the generative response if KB has no answer
+        logging.info("No KB result. Using generative response for interruption.")
+        state.tactic_history[current_node_id].append("generative_response")
+        await self._handle_user_response(user_input, state)
 
-        chat = [llm.ChatMessage(role=llm.ChatRole.SYSTEM, content=prompt)]
+    async def _resume_script(self, state: CallFlowState):
+        """
+        Resumes speaking the script from where it was interrupted.
+        """
+        logging.info(f"Attempting to resume script for node {state.current_node_id}")
+        await self._speak_node_script(state)
 
+    async def _handle_user_response(self, user_input: str, state: CallFlowState):
+        """
+        Orchestrates the response to user input by first checking for deterministic transitions,
+        then falling back to the generative ResponseOrchestrator.
+        """
         try:
-            response = await llm_instance.chat(chat)
-            tactic_name = response.choices[0].message.content.strip()
+            logging.debug(f"Processing user input: '{user_input}' in node '{state.current_node_id}'")
+            self.conversation_state_manager.add_turn('user', user_input, state.current_node_id)
 
-            # Find the chosen tactic in the list
-            for tactic in strategic_toolkit:
-                if tactic.get("name") == tactic_name:
-                    logging.info(f"LLM chose tactic: {tactic_name}")
-                    return tactic
+            current_node = nodes.get(state.current_node_id)
+            if not current_node:
+                logging.error(f"Node '{state.current_node_id}' not found in CALL_FLOW.")
+                await self._transition_to_node("N_EndCall_Technical_Issue")
+                return
 
-            logging.info(f"LLM responded with '{tactic_name}', which is not a valid tactic name. No tactic chosen.")
-            return None
+            # 1. Check for deterministic transitions first
+            transitions = current_node.get("transitions", [])
+            if transitions:
+                evaluator = TransitionEvaluator(state)
+                for transition in transitions:
+                    condition_desc = transition.get("condition")
+                    if evaluator._check_condition(user_input, condition_desc):
+                        target_node_id = transition.get("target")
+                        logging.info(f"Deterministic transition triggered: '{condition_desc}' -> '{target_node_id}'")
+                        # In a deterministic transition, we always want the next node's script to play.
+                        await self._transition_to_node(target_node_id, suppress_script=False)
+                        await self.on_enter(suppress_script=False) # Explicitly call on_enter for the new node
+                        return # Transition taken, stop further processing
+
+            # 2. If no deterministic transition, use the ResponseOrchestrator
+            logging.info(f"No deterministic transition found. Delegating to ResponseOrchestrator.")
+
+            node_data = {
+                'id': state.current_node_id,
+                'goal': current_node.get('goal', ''),
+                'transitions': transitions,
+            }
+
+            result = self.response_orchestrator.generate_response(user_input, node_data)
+            logging.info(f"ResponseOrchestrator result: {result}")
+
+            response_text = result.get('response', "")
+            target_node = result.get('target_node')
+            should_transition = result.get('should_transition', False)
+
+            spoken_text = ""
+            if response_text:
+                spoken_completely = await self._speak_and_log_utterance(response_text, state, is_objection=True)
+                if not spoken_completely:
+                    logging.warning("Agent interrupted speaking response from orchestrator. Halting action.")
+                    return
+                spoken_text = response_text
+
+            # 3. Handle post-response actions (e.g., transitions from orchestrator)
+            if should_transition and target_node:
+                response_ends_with_question = spoken_text.strip().endswith('?')
+                silent_transition_nodes = ["N_KB_Q&A_With_StrategicNarrative_V3_Adaptive"]
+
+                # Strict Speak-Then-Listen Gating logic
+                if response_ends_with_question and target_node not in silent_transition_nodes:
+                    logging.info(f"Agent asked a question ('{spoken_text}'). Delaying transition to await user response.")
+                    state.waiting_for_objection_response = True
+                else:
+                    # Proceed with the transition.
+                    # Suppress the next node's script *only if* we actually spoke a non-empty response.
+                    suppress_next_script = bool(spoken_text)
+                    await self._transition_to_node(target_node, suppress_script=suppress_next_script)
+                    # If the transition is not delayed, we need to enter the new node now.
+                    await self.on_enter(suppress_script=suppress_next_script)
+            else:
+                logging.info("Orchestrator did not direct a transition or retry. Agent remains in the current node.")
 
         except Exception as e:
-            logging.error(f"Error during LLM call in _find_tactic: {e}")
-            return None
+            logging.error(f"CRITICAL: Unhandled error in _handle_user_response: {e}", exc_info=True)
+            await self._speak_and_log_utterance("I've run into an issue. Let's try that again.", state)
 
     async def _transition_to_node(self, next_node_id: str, suppress_script: bool = False):
         try:
             state: CallFlowState = self.session.userdata
             logging.info(f"Attempting to transition to node: {next_node_id}")
-            
+
             # Reset pivot state on node changes to prevent multi-pivot loops
             try:
                 pivot_controller.reset_on_transition(next_node_id)
             except Exception:
                 logging.debug("PivotController.reset_on_transition failed", exc_info=True)
-            
+
             # Set the suppress_next_node_script flag in conversation_state_manager
             # This flag is popped by on_enter of the *next* node.
             if suppress_script:
@@ -536,38 +524,5 @@ Analyze the user's statement and choose the single best tactic from the list. Re
         except Exception as e:
             logging.error(f"Unexpected error in _transition_to_node: {e}", exc_info=True)
 
-    async def tts_node(self, text_stream: AsyncIterable[str], model_settings: llm.ModelSettings) -> AsyncIterable[rtc.AudioFrame]:
-        """
-        Custom TTS node to handle SSML tags.
-        """
-        # This is a simplified implementation. A more robust version would need to
-        # handle the async stream more carefully. We accumulate the stream into a
-        # single string here, which works for our use case since we send complete
-        # script segments to the `say` method.
-
-        complete_text = ""
-        async for text_chunk in text_stream:
-            complete_text += text_chunk
-
-        if complete_text.strip().startswith("<speak>"):
-            logging.info(f"SSML detected. Passing to TTS as a single block: {complete_text}")
-
-            # Re-create a stream with the single, complete SSML string.
-            # This assumes the underlying TTS engine (e.g., Cartesia, OpenAI TTS)
-            # will correctly interpret the SSML when passed as a whole.
-            async def ssml_stream():
-                yield complete_text
-
-            # Call the default TTS node with the SSML string.
-            return Agent.default.tts_node(self, ssml_stream(), model_settings)
-        else:
-            # Not SSML, so let the default handler process it, which will likely
-            # do sentence-based chunking for better streaming performance.
-            logging.info(f"Plain text detected. Using default TTS processing: {complete_text}")
-            async def original_stream():
-                yield complete_text
-
-            return Agent.default.tts_node(self, original_stream(), model_settings)
-
 # Back-compat alias for legacy tests expecting `CallerAgent`
-CallerAgent = CallFlowAgentV2
+CallerAgent = CallFlowAgent
