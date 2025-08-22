@@ -1,4 +1,6 @@
 import logging
+from typing import Optional
+
 from livekit import agents
 from livekit.agents import llm
 
@@ -10,11 +12,10 @@ class NewCallFlowAgent(agents.Agent):
     The LiveKit Agent that integrates with the new ConversationEngine.
     """
     def __init__(self):
-        # Add the required 'instructions' argument to the super().__init__() call.
         super().__init__(instructions="You are a helpful voice assistant.")
         self.engine: Optional[ConversationEngine] = None
-        self.session = None
-
+        # self.session = None # This line caused the AttributeError and has been removed.
+        # The session is a read-only property managed by the framework.
 
     async def on_enter(self, session):
         """
@@ -22,17 +23,15 @@ class NewCallFlowAgent(agents.Agent):
         Initializes the state and engine, and starts the conversation.
         """
         try:
-            self.session = session
             # 1. Initialize State
-            # In a real app, customer_name would come from context or a database.
             customer_name = "John"
             initial_state = ConversationState(
                 customer_name=customer_name,
                 current_node_id="N001A_NameConfirmation_Only" # Starting node
             )
 
-            # 2. Initialize Engine
-            self.engine = ConversationEngine(initial_state, self.session)
+            # 2. Initialize Engine, passing the session received here.
+            self.engine = ConversationEngine(initial_state, session)
 
             # 3. Start the conversation
             logging.info("Starting new conversation engine...")
